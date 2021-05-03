@@ -24,14 +24,13 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/operation"
 	botanistpkg "github.com/gardener/gardener/pkg/operation/botanist"
-	"github.com/gardener/gardener/pkg/operation/common"
 	shootpkg "github.com/gardener/gardener/pkg/operation/shoot"
 	utilerrors "github.com/gardener/gardener/pkg/utils/errors"
 	"github.com/gardener/gardener/pkg/utils/flow"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	retryutils "github.com/gardener/gardener/pkg/utils/retry"
 
@@ -45,40 +44,34 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-func (c *Controller) prepareShootForMigration(ctx context.Context, logger *logrus.Entry, shoot *gardencorev1beta1.Shoot, project *gardencorev1beta1.Project, cloudProfile *gardencorev1beta1.CloudProfile, seed *gardencorev1beta1.Seed) (reconcile.Result, error) {
+func (c *Controller) prepareShootForMigration(ctx context.Context, logger *logrus.Entry, gardenClient kubernetes.Interface, shoot *gardencorev1beta1.Shoot, project *gardencorev1beta1.Project, cloudProfile *gardencorev1beta1.CloudProfile, seed *gardencorev1beta1.Seed) (reconcile.Result, error) {
 	var (
 		err error
 
 		respectSyncPeriodOverwrite = c.respectSyncPeriodOverwrite()
-		failed                     = common.IsShootFailed(shoot)
-		ignored                    = common.ShouldIgnoreShoot(respectSyncPeriodOverwrite, shoot)
+		failed                     = gutil.IsShootFailed(shoot)
+		ignored                    = gutil.ShouldIgnoreShoot(respectSyncPeriodOverwrite, shoot)
 	)
 
 	if failed || ignored {
 		return reconcile.Result{}, fmt.Errorf("shoot %s is failed or ignored, will skip migration preparation", shoot.GetName())
 	}
 
-	gardenClient, err := c.clientMap.GetClient(ctx, keys.ForGarden())
-	if err != nil {
-		return reconcile.Result{}, fmt.Errorf("failed to get garden client: %w", err)
-	}
-
 	c.recorder.Event(shoot, corev1.EventTypeNormal, gardencorev1beta1.EventPrepareMigration, "Prepare Shoot cluster for migration")
 	shootNamespace := shootpkg.ComputeTechnicalID(project.Name, shoot)
-	shoot, err = c.updateShootStatusOperationStart(ctx, gardenClient.GardenCore(), shoot, shootNamespace, gardencorev1beta1.LastOperationTypeMigrate)
-	if err != nil {
+	if err = c.updateShootStatusOperationStart(ctx, gardenClient.Client(), shoot, shootNamespace, gardencorev1beta1.LastOperationTypeMigrate); err != nil {
 		return reconcile.Result{}, err
 	}
 
-	o, operationErr := c.initializeOperation(ctx, logger, shoot, project, cloudProfile, seed)
+	o, operationErr := c.initializeOperation(ctx, logger, gardenClient, shoot, project, cloudProfile, seed)
 	if operationErr != nil {
-		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, shoot, fmt.Sprintf("Could not initialize a new operation for preparation of Shoot Control Plane migration: %s", operationErr.Error()), gardencorev1beta1.LastOperationTypeMigrate, lastErrorsOperationInitializationFailure(shoot.Status.LastErrors, operationErr)...)
+		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o, shoot, fmt.Sprintf("Could not initialize a new operation for preparation of Shoot Control Plane migration: %s", operationErr.Error()), gardencorev1beta1.LastOperationTypeMigrate, lastErrorsOperationInitializationFailure(shoot.Status.LastErrors, operationErr)...)
 		return reconcile.Result{}, utilerrors.WithSuppressed(operationErr, updateErr)
 	}
 
 	if flowErr := c.runPrepareShootControlPlaneMigration(o); flowErr != nil {
 		c.recorder.Event(shoot, corev1.EventTypeWarning, gardencorev1beta1.EventMigrationPreparationFailed, flowErr.Description)
-		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o.Shoot.Info, flowErr.Description, gardencorev1beta1.LastOperationTypeMigrate, flowErr.LastErrors...)
+		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o, o.Shoot.Info, flowErr.Description, gardencorev1beta1.LastOperationTypeMigrate, flowErr.LastErrors...)
 		return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(flowErr.Description), updateErr)
 	}
 
@@ -88,7 +81,6 @@ func (c *Controller) prepareShootForMigration(ctx context.Context, logger *logru
 func (c *Controller) runPrepareShootControlPlaneMigration(o *operation.Operation) *gardencorev1beta1helper.WrappedLastErrors {
 	var (
 		ctx                          = context.TODO()
-		namespace                    = &corev1.Namespace{}
 		botanist                     *botanistpkg.Botanist
 		err                          error
 		tasksWithErrors              []string
@@ -120,7 +112,7 @@ func (c *Controller) runPrepareShootControlPlaneMigration(o *operation.Operation
 		}),
 		utilerrors.ToExecute("Retrieve kube-apiserver deployment in the shoot namespace in the seed cluster", func() error {
 			deploymentKubeAPIServer := &appsv1.Deployment{}
-			if err := botanist.K8sSeedClient.Client().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeAPIServer), deploymentKubeAPIServer); err != nil {
+			if err := botanist.K8sSeedClient.APIReader().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeAPIServer), deploymentKubeAPIServer); err != nil {
 				if !apierrors.IsNotFound(err) {
 					return err
 				}
@@ -132,13 +124,15 @@ func (c *Controller) runPrepareShootControlPlaneMigration(o *operation.Operation
 			return nil
 		}),
 		utilerrors.ToExecute("Retrieve the Shoot namespace in the Seed cluster", func() error {
-			if err := botanist.K8sSeedClient.Client().Get(ctx, client.ObjectKey{Name: o.Shoot.SeedNamespace}, namespace); err != nil {
+			botanist.SeedNamespaceObject = &corev1.Namespace{}
+			err := botanist.K8sSeedClient.APIReader().Get(ctx, client.ObjectKey{Name: o.Shoot.SeedNamespace}, botanist.SeedNamespaceObject)
+			if err != nil {
 				if apierrors.IsNotFound(err) {
 					o.Logger.Infof("Did not find '%s' namespace in the Seed cluster - nothing to be done", o.Shoot.SeedNamespace)
 					return utilerrors.Cancel()
 				}
 			}
-			return nil
+			return err
 		}),
 	)
 
@@ -150,7 +144,7 @@ func (c *Controller) runPrepareShootControlPlaneMigration(o *operation.Operation
 	}
 
 	var (
-		nonTerminatingNamespace = namespace.Status.Phase != corev1.NamespaceTerminating
+		nonTerminatingNamespace = botanist.SeedNamespaceObject.Status.Phase != corev1.NamespaceTerminating
 		cleanupShootResources   = nonTerminatingNamespace && kubeAPIServerDeploymentFound
 		wakeupRequired          = (o.Shoot.Info.Status.IsHibernated || (!o.Shoot.Info.Status.IsHibernated && o.Shoot.HibernationEnabled)) && cleanupShootResources
 		defaultTimeout          = 10 * time.Minute
@@ -199,18 +193,18 @@ func (c *Controller) runPrepareShootControlPlaneMigration(o *operation.Operation
 		})
 		annotateExtensionCRsForMigration = g.Add(flow.Task{
 			Name:         "Annotating Extensions CRs with operation - migration",
-			Fn:           botanist.AnnotateExtensionCRsForMigration,
+			Fn:           botanist.MigrateAllExtensionResources,
 			Dependencies: flow.NewTaskIDs(ensureResourceManagerScaledUp),
 		})
 		waitForExtensionCRsOperationMigrateToSucceed = g.Add(flow.Task{
 			Name:         "Waiting until all extension CRs are with lastOperation Status Migrate = Succeeded",
-			Fn:           botanist.WaitForExtensionsOperationMigrateToSucceed,
+			Fn:           botanist.WaitUntilAllExtensionResourcesMigrated,
 			Dependencies: flow.NewTaskIDs(annotateExtensionCRsForMigration),
 		})
 		deleteAllExtensionCRs = g.Add(flow.Task{
 			Name:         "Deleting all extension CRs from the Shoot namespace",
 			Dependencies: flow.NewTaskIDs(waitForExtensionCRsOperationMigrateToSucceed),
-			Fn:           botanist.DeleteAllExtensionCRs,
+			Fn:           botanist.DestroyAllExtensionResources,
 		})
 		keepManagedResourcesObjectsInShoot = g.Add(flow.Task{
 			Name:         "Configuring Managed Resources objects to be kept in the Shoot",
@@ -267,10 +261,20 @@ func (c *Controller) runPrepareShootControlPlaneMigration(o *operation.Operation
 			Fn:           flow.TaskFn(botanist.ScaleETCDToZero).DoIf(nonTerminatingNamespace),
 			Dependencies: flow.NewTaskIDs(createETCDSnapshot),
 		})
+		migrateBackupEntryInGarden = g.Add(flow.Task{
+			Name:         "Migrate BackupEntry to new seed",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.BackupEntry.Migrate),
+			Dependencies: flow.NewTaskIDs(createETCDSnapshot),
+		})
+		waitUntilBackupEntryInGardenMigrated = g.Add(flow.Task{
+			Name:         "Waiting for BackupEntry to be migrated to new seed",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.BackupEntry.WaitMigrate),
+			Dependencies: flow.NewTaskIDs(migrateBackupEntryInGarden),
+		})
 		deleteNamespace = g.Add(flow.Task{
 			Name:         "Deleting shoot namespace in Seed",
 			Fn:           flow.TaskFn(botanist.DeleteSeedNamespace).RetryUntilTimeout(defaultInterval, defaultTimeout),
-			Dependencies: flow.NewTaskIDs(deleteAllExtensionCRs, destroyDNSProviders, waitForManagedResourcesDeletion, scaleETCDToZero),
+			Dependencies: flow.NewTaskIDs(waitUntilBackupEntryInGardenMigrated, deleteAllExtensionCRs, destroyDNSProviders, waitForManagedResourcesDeletion, scaleETCDToZero),
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Waiting until shoot namespace in Seed has been deleted",
@@ -300,25 +304,18 @@ func (c *Controller) finalizeShootPrepareForMigration(ctx context.Context, garde
 		if err := o.DeleteClusterResourceFromSeed(ctx); err != nil {
 			lastErr := gardencorev1beta1helper.LastError(fmt.Sprintf("Could not delete Cluster resource in seed: %s", err))
 			c.recorder.Event(shoot, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, lastErr.Description)
-			_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, shoot, lastErr.Description, gardencorev1beta1.LastOperationTypeMigrate, *lastErr)
+			_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, o, shoot, lastErr.Description, gardencorev1beta1.LastOperationTypeMigrate, *lastErr)
 			return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(lastErr.Description), updateErr)
 		}
 	}
-
-	if err := o.SwitchBackupEntryToTargetSeed(ctx); err != nil {
-		lastErr := gardencorev1beta1helper.LastError(fmt.Sprintf("Could not switch BackupEntry resource in Garden to new Seed: %s", err))
-		c.recorder.Event(shoot, corev1.EventTypeWarning, gardencorev1beta1.EventDeleteError, lastErr.Description)
-		_, updateErr := c.updateShootStatusOperationError(ctx, gardenClient, shoot, lastErr.Description, gardencorev1beta1.LastOperationTypeMigrate, *lastErr)
-		return reconcile.Result{}, utilerrors.WithSuppressed(errors.New(lastErr.Description), updateErr)
-	}
-
-	c.recorder.Event(shoot, corev1.EventTypeNormal, gardencorev1beta1.EventMigrationPrepared, "Shoot Control Plane prepared for migration, successfully")
 
 	oldObj := o.Shoot.Info.DeepCopy()
 	controllerutils.RemoveAllTasks(o.Shoot.Info.Annotations)
 	if err := gardenClient.Client().Patch(ctx, o.Shoot.Info, client.MergeFrom(oldObj)); err != nil {
 		return reconcile.Result{}, err
 	}
+
+	c.recorder.Event(shoot, corev1.EventTypeNormal, gardencorev1beta1.EventMigrationPrepared, "Shoot Control Plane prepared for migration, successfully")
 
 	_, err := kutil.TryUpdateShootStatus(ctx, gardenClient.GardenCore(), retry.DefaultRetry, o.Shoot.Info.ObjectMeta,
 		c.updateShootRestorePendingStatusFunc("Shoot cluster state has been successfully prepared for migration."))

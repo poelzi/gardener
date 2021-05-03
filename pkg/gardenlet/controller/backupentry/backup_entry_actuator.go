@@ -20,13 +20,15 @@ import (
 	"strings"
 	"time"
 
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	extensionsbackupentry "github.com/gardener/gardener/pkg/operation/botanist/extensions/backupentry"
-	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/pkg/extensions"
+	extensionsbackupentry "github.com/gardener/gardener/pkg/operation/botanist/component/extensions/backupentry"
 	"github.com/gardener/gardener/pkg/utils/flow"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 
@@ -34,8 +36,6 @@ import (
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	kretry "k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -52,6 +52,8 @@ type Actuator interface {
 	Reconcile(context.Context) error
 	// Delete deletes the BackupEntry.
 	Delete(context.Context) error
+	// Migrate migrates the BackupEntry.
+	Migrate(context.Context) error
 }
 
 type actuator struct {
@@ -60,7 +62,7 @@ type actuator struct {
 	seedClient   kubernetes.Interface
 	backupBucket *gardencorev1beta1.BackupBucket
 	backupEntry  *gardencorev1beta1.BackupEntry
-	component    extensionsbackupentry.BackupEntry
+	component    extensionsbackupentry.Interface
 }
 
 func newActuator(gardenClient, seedClient kubernetes.Interface, be *gardencorev1beta1.BackupEntry, logger logrus.FieldLogger) Actuator {
@@ -163,18 +165,58 @@ func (a *actuator) Delete(ctx context.Context) error {
 	})
 }
 
+func (a *actuator) Migrate(ctx context.Context) error {
+	var (
+		g = flow.NewGraph("Backup Entry migration")
+
+		migrateBackupEntry = g.Add(flow.Task{
+			Name: "Migrating backup entry extension",
+			Fn:   a.component.Migrate,
+		})
+		waitUntilBackupEntryMigrated = g.Add(flow.Task{
+			Name:         "Waiting until extension backup entry is migrated",
+			Fn:           a.component.WaitMigrate,
+			Dependencies: flow.NewTaskIDs(migrateBackupEntry),
+		})
+		deleteBackupEntry = g.Add(flow.Task{
+			Name:         "Destroying backup entry extension",
+			Fn:           a.component.Destroy,
+			Dependencies: flow.NewTaskIDs(waitUntilBackupEntryMigrated),
+		})
+		waitUntilBackupEntryExtensionDeleted = g.Add(flow.Task{
+			Name:         "Waiting until extension backup entry is deleted",
+			Fn:           a.component.WaitCleanup,
+			Dependencies: flow.NewTaskIDs(deleteBackupEntry),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Deleting backup entry secret in seed",
+			Fn:           flow.TaskFn(a.deleteBackupEntryExtensionSecret).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(waitUntilBackupEntryExtensionDeleted),
+		})
+
+		f = g.Compile()
+	)
+
+	return f.Run(flow.Opts{
+		Logger:           a.logger,
+		ProgressReporter: flow.NewImmediateProgressReporter(a.reportBackupEntryProgress),
+		Context:          ctx,
+	})
+}
+
 // reportBackupEntryProgress will update the phase and error in the BackupEntry manifest `status` section
 // by the current progress of the Flow execution.
 func (a *actuator) reportBackupEntryProgress(ctx context.Context, stats *flow.Stats) {
-	if err := kutil.TryUpdateStatus(ctx, kretry.DefaultBackoff, a.gardenClient.DirectClient(), a.backupEntry, func() error {
-		if a.backupEntry.Status.LastOperation == nil {
-			return fmt.Errorf("last operation of BackupEntry %s/%s is unset", a.backupEntry.Namespace, a.backupEntry.Name)
-		}
-		a.backupEntry.Status.LastOperation.Description = makeDescription(stats)
-		a.backupEntry.Status.LastOperation.Progress = stats.ProgressPercent()
-		a.backupEntry.Status.LastOperation.LastUpdateTime = metav1.Now()
-		return nil
-	}); err != nil {
+	patch := client.MergeFrom(a.backupEntry.DeepCopy())
+
+	if a.backupEntry.Status.LastOperation == nil {
+		a.backupEntry.Status.LastOperation = &gardencorev1beta1.LastOperation{}
+	}
+	a.backupEntry.Status.LastOperation.Description = makeDescription(stats)
+	a.backupEntry.Status.LastOperation.Progress = stats.ProgressPercent()
+	a.backupEntry.Status.LastOperation.LastUpdateTime = metav1.Now()
+
+	if err := a.gardenClient.Client().Status().Patch(ctx, a.backupEntry, patch); err != nil {
 		a.logger.Warnf("could not report backupEntry progress with description: %s, %v", makeDescription(stats), err)
 	}
 }
@@ -187,7 +229,7 @@ func makeDescription(stats *flow.Stats) string {
 }
 
 func (a *actuator) waitUntilBackupBucketReconciled(ctx context.Context) error {
-	if err := common.WaitUntilObjectReadyWithHealthFunction(
+	if err := extensions.WaitUntilObjectReadyWithHealthFunction(
 		ctx,
 		a.gardenClient.DirectClient(),
 		a.logger,
@@ -199,7 +241,7 @@ func (a *actuator) waitUntilBackupBucketReconciled(ctx context.Context) error {
 		defaultInterval,
 		defaultSevereThreshold,
 		defaultTimeout,
-		func(obj runtime.Object) error {
+		func(obj client.Object) error {
 			bb, ok := obj.(*gardencorev1beta1.BackupBucket)
 			if !ok {
 				return fmt.Errorf("expected gardencorev1beta1.BackupBucket but got %T", obj)
@@ -230,7 +272,7 @@ func (a *actuator) deployBackupEntryExtensionSecret(ctx context.Context) error {
 		coreSecretRef = a.backupBucket.Status.GeneratedSecretRef
 	}
 
-	coreSecret, err := common.GetSecretFromSecretRef(ctx, a.gardenClient.Client(), coreSecretRef)
+	coreSecret, err := kutil.GetSecretByReference(ctx, a.gardenClient.Client(), coreSecretRef)
 	if err != nil {
 		return errors.Wrapf(err, "could not get secret referred in core backup bucket")
 	}
@@ -259,5 +301,24 @@ func (a *actuator) deployBackupEntryExtension(ctx context.Context) error {
 	a.component.SetRegion(a.backupBucket.Spec.Provider.Region)
 	a.component.SetBackupBucketProviderStatus(a.backupBucket.Status.ProviderStatus)
 
-	return a.component.Deploy(ctx)
+	if !a.isRestorePhase() {
+		return a.component.Deploy(ctx)
+	}
+
+	shootName := gutil.GetShootNameFromOwnerReferences(a.backupEntry)
+	shootState := &gardencorev1alpha1.ShootState{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      shootName,
+			Namespace: a.backupEntry.Namespace,
+		},
+	}
+	if err := a.gardenClient.Client().Get(ctx, kutil.Key(shootState.Namespace, shootState.Name), shootState); err != nil {
+		return err
+	}
+	return a.component.Restore(ctx, shootState)
+}
+
+// isRestorePhase checks to see if the BackupEntry's LastOperation is Restore
+func (a *actuator) isRestorePhase() bool {
+	return a.backupEntry.Status.LastOperation != nil && a.backupEntry.Status.LastOperation.Type == gardencorev1beta1.LastOperationTypeRestore
 }

@@ -1,6 +1,6 @@
 # Preparing the Setup
 
-Conceptually, all Gardener components are designated to run inside as a Pod inside a Kubernetes cluster.
+Conceptually, all Gardener components are designated to run as a Pod inside a Kubernetes cluster.
 The API server extends the Kubernetes API via the user-aggregated API server concepts.
 However, if you want to develop it, you may want to work locally with the Gardener without building a Docker image and deploying it to a cluster each and every time.
 That means that the Gardener runs outside a Kubernetes cluster which requires providing a [Kubeconfig](https://kubernetes.io/docs/tasks/access-application-cluster/authenticate-across-clusters-kubeconfig/) in your local filesystem and point the Gardener to it when starting it (see below).
@@ -18,7 +18,7 @@ This setup is based on [minikube](https://github.com/kubernetes/minikube), a Kub
 Install latest version of Golang. For MacOS you could use [Homebrew](https://brew.sh/):
 
 ```bash
-brew install golang
+brew install go
 ```
 
 For other OS, please check [Go installation documentation](https://golang.org/doc/install).
@@ -61,7 +61,9 @@ On other OS, please check the [Git installation documentation](https://git-scm.c
 
 We use `OpenVPN` to establish network connectivity from the control plane running in the Seed cluster to the Shoot's worker nodes running in private networks.
 To harden the security we need to generate another secret to encrypt the network traffic ([details](https://openvpn.net/index.php/open-source/documentation/howto.html#security)).
-Please install the `openvpn` binary. On MacOS run
+Please install the `openvpn` binary.
+
+On MacOS run
 
 ```bash
 brew install openvpn
@@ -73,6 +75,13 @@ On other OS, please check the [OpenVPN downloads page](https://openvpn.net/index
 ## Installing Minikube
 
 You'll need to have [minikube](https://github.com/kubernetes/minikube#installation) installed and running.
+
+On MacOS run
+
+```bash
+brew install minikube
+```
+
 > Note: Gardener is working only with self-contained kubeconfig files because of [security issue](https://banzaicloud.com/blog/kubeconfig-security/). You can configure your minikube to create self-contained kubeconfig files via:
 > ```bash
 > minikube config set embed-certs true
@@ -99,6 +108,17 @@ brew install iproute2mac
 ```bash
 go get -u github.com/bronze1man/yaml2json
 brew install jq
+export PATH=$PATH:$(go env GOPATH)/bin
+```
+
+## Installing GNU Parallel
+
+[GNU Parallel](https://www.gnu.org/software/parallel/) is a shell tool for executing jobs in parallel, used by the code generation scripts (`make generate`).
+
+On MacOS run
+
+```bash
+brew install parallel
 ```
 
 ## [MacOS only] Install GNU core utilities
@@ -187,7 +207,7 @@ For the development of Gardener you need some kind of Kubernetes cluster, which 
 I.e. you need a Kubernetes API server on which you can register a `APIService` Gardener's own Extension API Server.  
 For this you can use a standard tool from the community to setup a local cluster like minikube, kind or the Kubernetes Cluster feature in Docker for Desktop.
 
-However, if you develop and run Gardener's components locally, you don't actually a fully fledged Kubernetes Cluster,
+However, if you develop and run Gardener's components locally, you don't actually need a fully fledged Kubernetes Cluster,
 i.e. you don't actually need to run Pods on it. If you want to use a more lightweight approach for development purposes,
 you can use the "nodeless Garden cluster setup" residing in `hack/local-garden`. This is the easiest way to get your
 Gardener development setup up and running.
@@ -211,6 +231,8 @@ clusterrolebinding.rbac.authorization.k8s.io/front-proxy-client created
 
 This will start all minimally required components of a Kubernetes cluster (`etcd`, `kube-apiserver`, `kube-controller-manager`)
 and an `etcd` Instance for the `gardener-apiserver` as Docker containers.
+
+ℹ️ [Optional] If you want to develop the `SeedAuthorization` feature then you have to run `make ACTIVATE_SEEDAUTHORIZER=true local-garden-up`. However, please note that this forces you to start the `gardener-admission-controller` via `make start-admission-controller`.
 
 To tear down the local Garden cluster and remove the Docker containers, simply run:
 ```bash
@@ -257,6 +279,10 @@ To close the tunnels and remove the locally-running Docker containers, run:
 make remote-garden-down
 ```
 
+> Note: The minimum K8S version of the remote cluster that can be used as Garden cluster is `1.19.x`.
+
+> ⚠️ Please be aware that in the remote garden setup all Gardener components run with administrative permissions, i.e., there is no fine-grained access control via RBAC (as opposed to productive installations of Gardener).
+
 #### Prepare the Gardener
 
 Now, that you have started your local cluster, we can go ahead and register the Gardener API Server.
@@ -270,12 +296,13 @@ namespace/garden-dev created
 deployment.apps/etcd created
 service/etcd created
 service/gardener-apiserver created
-service/gardener-controller-manager created
+service/gardener-admission-controller created
 endpoints/gardener-apiserver created
-endpoints/gardener-controller-manager created
+endpoints/gardener-admission-controller created
 apiservice.apiregistration.k8s.io/v1alpha1.core.gardener.cloud created
 apiservice.apiregistration.k8s.io/v1beta1.core.gardener.cloud created
-validatingwebhookconfiguration.admissionregistration.k8s.io/gardener-controller-manager created
+apiservice.apiregistration.k8s.io/v1alpha1.seedmanagement.gardener.cloud created
+apiservice.apiregistration.k8s.io/v1alpha1.settings.gardener.cloud created
 ```
 
 Optionally, you can switch off the `Logging` feature gate of Gardenlet to save resources:
@@ -396,7 +423,7 @@ kubectl apply -f dev/05-project-dev.yaml
 Make sure that the Project is successfully reconciled:
 
 ```bash
-$ k get project dev
+$ kubectl get project dev
 NAME   NAMESPACE    STATUS   OWNER                  CREATOR            AGE
 dev    garden-dev   Ready    john.doe@example.com   kubernetes-admin   6s
 ```
@@ -415,7 +442,7 @@ The [Known Extension Implementations](../../extensions/README.md#known-extension
 As a convention, example ControllerRegistration manifest for an extension is located under `example/controller-registration.yaml` in the corresponding repository (for example for AWS the ControllerRegistration can be found [here](https://github.com/gardener/gardener-extension-provider-aws/blob/master/example/controller-registration.yaml)). An example creation of ControllerRegistration for provider-aws:
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/gardener/gardener-extension-provider-aws/$VERSION/example/controller-registration.yaml
+kubectl apply -f https://raw.githubusercontent.com/gardener/gardener-extension-provider-aws/master/example/controller-registration.yaml
 ```
 
 #### 5. Register a Seed

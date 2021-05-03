@@ -23,7 +23,7 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/test"
 
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
@@ -54,58 +54,6 @@ var _ = Describe("Utils", func() {
 	Describe("UnsafeGuessKind", func() {
 		It("should guess the kind correctly", func() {
 			Expect(controller.UnsafeGuessKind(&extensionsv1alpha1.Infrastructure{})).To(Equal("Infrastructure"))
-		})
-	})
-
-	Describe("#GetSecretByRef", func() {
-		var (
-			ctx = context.TODO()
-
-			name      = "foo"
-			namespace = "bar"
-		)
-
-		It("should get the secret", func() {
-			var (
-				objectMeta = metav1.ObjectMeta{
-					Name:      name,
-					Namespace: namespace,
-				}
-				data = map[string][]byte{
-					"foo": []byte("bar"),
-				}
-			)
-
-			c.EXPECT().Get(ctx, kutil.Key(namespace, name), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, secret *corev1.Secret) error {
-				secret.ObjectMeta = objectMeta
-				secret.Data = data
-				return nil
-			})
-
-			secret, err := controller.GetSecretByReference(ctx, c, &corev1.SecretReference{
-				Name:      name,
-				Namespace: namespace,
-			})
-
-			Expect(err).NotTo(HaveOccurred())
-			Expect(secret).To(Equal(&corev1.Secret{
-				ObjectMeta: objectMeta,
-				Data:       data,
-			}))
-		})
-
-		It("should return the error", func() {
-			ctx := context.TODO()
-
-			c.EXPECT().Get(ctx, kutil.Key(namespace, name), gomock.AssignableToTypeOf(&corev1.Secret{})).Return(fmt.Errorf("error"))
-
-			secret, err := controller.GetSecretByReference(ctx, c, &corev1.SecretReference{
-				Name:      name,
-				Namespace: namespace,
-			})
-
-			Expect(err).To(HaveOccurred())
-			Expect(secret).To(BeNil())
 		})
 	})
 
@@ -201,9 +149,11 @@ var _ = Describe("Utils", func() {
 	Describe("#RemoveAnnotation", func() {
 		It("should delete specific annotation", func() {
 			annotation := "test-delete-annotation-key"
+
 			annotations := make(map[string]string)
 			annotations[annotation] = "test-delete-annotation-value"
 			annotations["test-no-delete-annotation-key"] = "test-no-delete-annotation-value"
+
 			worker := &extensionsv1alpha1.Worker{
 				TypeMeta: metav1.TypeMeta{
 					Kind:       "Worker",
@@ -216,9 +166,11 @@ var _ = Describe("Utils", func() {
 				},
 			}
 			workerWithAnnotation := worker.DeepCopyObject()
-			ctx := context.TODO()
+			expectedWorker := worker.DeepCopy()
+			delete(expectedWorker.Annotations, annotation)
 
-			c.EXPECT().Patch(ctx, worker, client.MergeFrom(workerWithAnnotation))
+			ctx := context.TODO()
+			test.EXPECTPatch(ctx, c, expectedWorker, workerWithAnnotation, types.MergePatchType)
 
 			Expect(controller.RemoveAnnotation(ctx, c, worker, annotation)).To(Succeed())
 			Expect(len(worker.Annotations)).To(Equal(1))

@@ -28,7 +28,7 @@ import (
 	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation"
-	"github.com/gardener/gardener/pkg/operation/botanist/systemcomponents/metricsserver"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/konnectivity"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/operation/shoot"
 	"github.com/gardener/gardener/pkg/utils/flow"
@@ -43,6 +43,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 // Health contains information needed to execute shoot health checks.
@@ -91,14 +92,51 @@ type ExtensionCondition struct {
 }
 
 func (h *Health) getAllExtensionConditions(ctx context.Context) ([]ExtensionCondition, []ExtensionCondition, []ExtensionCondition, error) {
+	objs, err := h.retrieveExtensions(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	var (
 		conditionsControlPlaneHealthy     []ExtensionCondition
 		conditionsEveryNodeReady          []ExtensionCondition
 		conditionsSystemComponentsHealthy []ExtensionCondition
 	)
 
+	for _, obj := range objs {
+		acc, err := extensions.Accessor(obj)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+
+		gvk, err := apiutil.GVKForObject(obj, kubernetes.SeedScheme)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("failed to identify GVK for object: %w", err)
+		}
+
+		kind := gvk.Kind
+		name := acc.GetName()
+		namespace := acc.GetNamespace()
+
+		for _, condition := range acc.GetExtensionStatus().GetConditions() {
+			switch condition.Type {
+			case gardencorev1beta1.ShootControlPlaneHealthy:
+				conditionsControlPlaneHealthy = append(conditionsControlPlaneHealthy, ExtensionCondition{condition, kind, name, namespace})
+			case gardencorev1beta1.ShootEveryNodeReady:
+				conditionsEveryNodeReady = append(conditionsEveryNodeReady, ExtensionCondition{condition, kind, name, namespace})
+			case gardencorev1beta1.ShootSystemComponentsHealthy:
+				conditionsSystemComponentsHealthy = append(conditionsSystemComponentsHealthy, ExtensionCondition{condition, kind, name, namespace})
+			}
+		}
+	}
+
+	return conditionsControlPlaneHealthy, conditionsEveryNodeReady, conditionsSystemComponentsHealthy, nil
+}
+
+func (h *Health) retrieveExtensions(ctx context.Context) ([]runtime.Object, error) {
+	extensions := []runtime.Object{}
+
 	for _, listObj := range []client.ObjectList{
-		&extensionsv1alpha1.BackupEntryList{},
 		&extensionsv1alpha1.ContainerRuntimeList{},
 		&extensionsv1alpha1.ControlPlaneList{},
 		&extensionsv1alpha1.ExtensionList{},
@@ -109,38 +147,28 @@ func (h *Health) getAllExtensionConditions(ctx context.Context) ([]ExtensionCond
 	} {
 		listKind := listObj.GetObjectKind().GroupVersionKind().Kind
 		if err := h.seedClient.Client().List(ctx, listObj, client.InNamespace(h.shoot.SeedNamespace)); err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 
 		if err := meta.EachListItem(listObj, func(obj runtime.Object) error {
-			acc, err := extensions.Accessor(obj)
-			if err != nil {
-				return err
-			}
-
-			kind := obj.GetObjectKind().GroupVersionKind().Kind
-			name := acc.GetName()
-			namespace := acc.GetNamespace()
-
-			for _, condition := range acc.GetExtensionStatus().GetConditions() {
-				switch condition.Type {
-				case gardencorev1beta1.ShootControlPlaneHealthy:
-					conditionsControlPlaneHealthy = append(conditionsControlPlaneHealthy, ExtensionCondition{condition, kind, name, namespace})
-				case gardencorev1beta1.ShootEveryNodeReady:
-					conditionsEveryNodeReady = append(conditionsEveryNodeReady, ExtensionCondition{condition, kind, name, namespace})
-				case gardencorev1beta1.ShootSystemComponentsHealthy:
-					conditionsSystemComponentsHealthy = append(conditionsSystemComponentsHealthy, ExtensionCondition{condition, kind, name, namespace})
-				}
-			}
-
+			extensions = append(extensions, obj)
 			return nil
 		}); err != nil {
 			h.logger.Errorf("Error during evaluation of kind %q for extensions health check: %+v", listKind, err)
-			return nil, nil, nil, err
+			return nil, err
 		}
 	}
 
-	return conditionsControlPlaneHealthy, conditionsEveryNodeReady, conditionsSystemComponentsHealthy, nil
+	// Get BackupEntries separately as they are not namespaced i.e., they cannot be narrowed down
+	// to a shoot namespace like other extension resources above.
+	be := &extensionsv1alpha1.BackupEntry{}
+	beName := common.GenerateBackupEntryName(h.shoot.Info.Status.TechnicalID, h.shoot.Info.Status.UID)
+	if err := h.seedClient.Client().Get(ctx, kutil.Key(beName), be); client.IgnoreNotFound(err) != nil {
+		return nil, err
+	}
+	extensions = append(extensions, be)
+
+	return extensions, nil
 }
 
 func (h *Health) healthChecks(
@@ -173,7 +201,7 @@ func (h *Health) healthChecks(
 	}
 
 	var (
-		checker               = NewHealthChecker(thresholdMappings, healthCheckOutdatedThreshold, h.shoot.Info.Status.LastOperation, h.shoot.KubernetesVersion, h.shoot.GardenerVersion)
+		checker               = NewHealthChecker(thresholdMappings, healthCheckOutdatedThreshold, h.shoot.Info.Status.LastOperation, h.shoot.KubernetesVersion)
 		seedDeploymentLister  = makeDeploymentLister(ctx, h.seedClient.Client(), h.shoot.SeedNamespace, controlPlaneMonitoringLoggingSelector)
 		seedStatefulSetLister = makeStatefulSetLister(ctx, h.seedClient.Client(), h.shoot.SeedNamespace, controlPlaneMonitoringLoggingSelector)
 		seedEtcdLister        = makeEtcdLister(ctx, h.seedClient.Client(), h.shoot.SeedNamespace)
@@ -266,12 +294,7 @@ func (h *Health) checkSystemComponents(
 	condition gardencorev1beta1.Condition,
 	extensionConditions []ExtensionCondition,
 ) (*gardencorev1beta1.Condition, error) {
-	managedResources := managedResourcesShoot.List()
-	if versionConstraintGreaterEqual113.Check(checker.gardenerVersion) {
-		managedResources = append(managedResources, metricsserver.ManagedResourceName)
-	}
-
-	for _, name := range managedResources {
+	for name := range managedResourcesShoot {
 		mr := &resourcesv1alpha1.ManagedResource{}
 		if err := h.seedClient.Client().Get(ctx, kutil.Key(h.shoot.SeedNamespace, name), mr); err != nil {
 			return nil, err
@@ -296,8 +319,8 @@ func (h *Health) checkSystemComponents(
 	}
 
 	tunnelName := common.VPNTunnel
-	if podsList.Items[0].Labels["app"] == common.KonnectivityTunnel {
-		tunnelName = common.KonnectivityTunnel
+	if podsList.Items[0].Labels["app"] == konnectivity.AgentName {
+		tunnelName = konnectivity.AgentName
 	}
 
 	if established, err := kuberneteshealth.CheckTunnelConnection(ctx, h.shootClient, logrus.NewEntry(logger.NewNopLogger()), tunnelName); err != nil || !established {
@@ -329,6 +352,6 @@ func (h *Health) checkClusterNodes(
 		return exitCondition, nil
 	}
 
-	c := gardencorev1beta1helper.UpdatedCondition(condition, gardencorev1beta1.ConditionTrue, "EveryNodeReady", "Every node registered to the cluster is ready.")
+	c := gardencorev1beta1helper.UpdatedCondition(condition, gardencorev1beta1.ConditionTrue, "EveryNodeReady", "All nodes are ready.")
 	return &c, nil
 }

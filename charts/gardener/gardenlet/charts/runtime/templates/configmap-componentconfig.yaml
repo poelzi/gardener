@@ -16,8 +16,12 @@ data:
     apiVersion: gardenlet.config.gardener.cloud/v1alpha1
     kind: GardenletConfiguration
     gardenClientConnection:
-      acceptContentTypes: {{ required ".Values.global.gardenlet.config.gardenClientConnection.acceptContentTypes is required" .Values.global.gardenlet.config.gardenClientConnection.acceptContentTypes }}
-      contentType: {{ required ".Values.global.gardenlet.config.gardenClientConnection.contentType is required" .Values.global.gardenlet.config.gardenClientConnection.contentType }}
+      {{- with .Values.global.gardenlet.config.gardenClientConnection.acceptContentTypes }}
+      acceptContentTypes: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.global.gardenlet.config.gardenClientConnection.contentType }}
+      contentType: {{ . | quote }}
+      {{- end }}
       qps: {{ required ".Values.global.gardenlet.config.gardenClientConnection.qps is required" .Values.global.gardenlet.config.gardenClientConnection.qps }}
       burst: {{ required ".Values.global.gardenlet.config.gardenClientConnection.burst is required" .Values.global.gardenlet.config.gardenClientConnection.burst }}
       {{- if .Values.global.gardenlet.config.gardenClientConnection.gardenClusterAddress }}
@@ -40,16 +44,24 @@ data:
       kubeconfig: /etc/gardenlet/kubeconfig-garden/kubeconfig
       {{- end }}
     seedClientConnection:
-      acceptContentTypes: {{ required ".Values.global.gardenlet.config.seedClientConnection.acceptContentTypes is required" .Values.global.gardenlet.config.seedClientConnection.acceptContentTypes }}
-      contentType: {{ required ".Values.global.gardenlet.config.seedClientConnection.contentType is required" .Values.global.gardenlet.config.seedClientConnection.contentType }}
+      {{- with .Values.global.gardenlet.config.seedClientConnection.acceptContentTypes }}
+      acceptContentTypes: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.global.gardenlet.config.seedClientConnection.contentType }}
+      contentType: {{ . | quote }}
+      {{- end }}
       qps: {{ required ".Values.global.gardenlet.config.seedClientConnection.qps is required" .Values.global.gardenlet.config.seedClientConnection.qps }}
       burst: {{ required ".Values.global.gardenlet.config.seedClientConnection.burst is required" .Values.global.gardenlet.config.seedClientConnection.burst }}
       {{- if .Values.global.gardenlet.config.seedClientConnection.kubeconfig }}
       kubeconfig: /etc/gardenlet/kubeconfig-seed/kubeconfig
       {{- end }}
     shootClientConnection:
-      acceptContentTypes: {{ required ".Values.global.gardenlet.config.shootClientConnection.acceptContentTypes is required" .Values.global.gardenlet.config.shootClientConnection.acceptContentTypes }}
-      contentType: {{ required ".Values.global.gardenlet.config.shootClientConnection.contentType is required" .Values.global.gardenlet.config.shootClientConnection.contentType }}
+      {{- with .Values.global.gardenlet.config.shootClientConnection.acceptContentTypes }}
+      acceptContentTypes: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.global.gardenlet.config.shootClientConnection.contentType }}
+      contentType: {{ . | quote }}
+      {{- end }}
       qps: {{ required ".Values.global.gardenlet.config.shootClientConnection.qps is required" .Values.global.gardenlet.config.shootClientConnection.qps }}
       burst: {{ required ".Values.global.gardenlet.config.shootClientConnection.burst is required" .Values.global.gardenlet.config.shootClientConnection.burst }}
     controllers:
@@ -59,6 +71,10 @@ data:
         concurrentSyncs: {{ required ".Values.global.gardenlet.config.controllers.backupEntry.concurrentSyncs is required" .Values.global.gardenlet.config.controllers.backupEntry.concurrentSyncs }}
         {{- if .Values.global.gardenlet.config.controllers.backupEntry.deletionGracePeriodHours }}
         deletionGracePeriodHours: {{ .Values.global.gardenlet.config.controllers.backupEntry.deletionGracePeriodHours }}
+        {{- end }}
+        {{- if .Values.global.gardenlet.config.controllers.backupEntry.deletionGracePeriodShootPurposes }}
+        deletionGracePeriodShootPurposes:
+{{ toYaml .Values.global.gardenlet.config.controllers.backupEntry.deletionGracePeriodShootPurposes | indent 8 }}
         {{- end }}
       {{- if .Values.global.gardenlet.config.controllers.controllerInstallation }}
       controllerInstallation:
@@ -111,10 +127,13 @@ data:
       shootStateSync:
         concurrentSyncs: {{ required ".Values.global.gardenlet.config.controllers.shootStateSync.concurrentSyncs is required" .Values.global.gardenlet.config.controllers.shootStateSync.concurrentSyncs }}
         syncPeriod: {{ required ".Values.global.gardenlet.config.controllers.shootStateSync.syncPeriod is required" .Values.global.gardenlet.config.controllers.shootStateSync.syncPeriod }}
-      {{- if .Values.global.gardenlet.config.controllers.shootedSeedRegistration }}
-      shootedSeedRegistration:
-        {{- if .Values.global.gardenlet.config.controllers.shootedSeedRegistration.syncJitterPeriod }}
-        syncJitterPeriod: {{ .Values.global.gardenlet.config.controllers.shootedSeedRegistration.syncJitterPeriod }}
+      {{- if .Values.global.gardenlet.config.controllers.managedSeed }}
+      managedSeed:
+        concurrentSyncs: {{ required ".Values.global.gardenlet.config.controllers.managedSeed.concurrentSyncs is required" .Values.global.gardenlet.config.controllers.managedSeed.concurrentSyncs }}
+        syncPeriod: {{ required ".Values.global.gardenlet.config.controllers.managedSeed.syncPeriod is required" .Values.global.gardenlet.config.controllers.managedSeed.syncPeriod }}
+        waitSyncPeriod: {{ required ".Values.global.gardenlet.config.controllers.managedSeed.waitSyncPeriod is required" .Values.global.gardenlet.config.controllers.managedSeed.waitSyncPeriod }}
+        {{- if .Values.global.gardenlet.config.controllers.managedSeed.syncJitterPeriod }}
+        syncJitterPeriod: {{ .Values.global.gardenlet.config.controllers.managedSeed.syncJitterPeriod }}
         {{- end }}
       {{- end }}
     resources:

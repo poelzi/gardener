@@ -19,15 +19,6 @@ import (
 	"errors"
 	"time"
 
-	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	"github.com/gardener/gardener/pkg/client/kubernetes/fake"
-	"github.com/gardener/gardener/pkg/logger"
-	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	"github.com/gardener/gardener/pkg/operation/common"
-	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
-
 	resourcesv1alpha1 "github.com/gardener/gardener-resource-manager/pkg/apis/resources/v1alpha1"
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
@@ -38,9 +29,18 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	"github.com/gardener/gardener/pkg/logger"
+	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
+	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
 )
 
 func replicas(i int32) *int32 {
@@ -173,6 +173,23 @@ var _ = Describe("health", func() {
 		)
 	})
 
+	DescribeTable("#CheckAPIService",
+		func(apiService *apiregistrationv1.APIService, matcher types.GomegaMatcher) {
+			err := health.CheckAPIService(apiService)
+			Expect(err).To(matcher)
+		},
+		Entry("Available=True", &apiregistrationv1.APIService{
+			Status: apiregistrationv1.APIServiceStatus{Conditions: []apiregistrationv1.APIServiceCondition{{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionTrue}}},
+		}, BeNil()),
+		Entry("Available=False", &apiregistrationv1.APIService{
+			Status: apiregistrationv1.APIServiceStatus{Conditions: []apiregistrationv1.APIServiceCondition{{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionFalse}}},
+		}, HaveOccurred()),
+		Entry("Available=Unknown", &apiregistrationv1.APIService{
+			Status: apiregistrationv1.APIServiceStatus{Conditions: []apiregistrationv1.APIServiceCondition{{Type: apiregistrationv1.Available, Status: apiregistrationv1.ConditionUnknown}}},
+		}, HaveOccurred()),
+		Entry("Available condition missing", &apiregistrationv1.APIService{}, HaveOccurred()),
+	)
+
 	Describe("CheckSeed", func() {
 		DescribeTable("seeds",
 			func(seed *gardencorev1beta1.Seed, identity *gardencorev1beta1.Gardener, matcher types.GomegaMatcher) {
@@ -291,7 +308,7 @@ var _ = Describe("health", func() {
 
 	Describe("CheckExtensionObject", func() {
 		DescribeTable("extension objects",
-			func(obj runtime.Object, match types.GomegaMatcher) {
+			func(obj client.Object, match types.GomegaMatcher) {
 				Expect(health.CheckExtensionObject(obj)).To(match)
 			},
 			Entry("not an extensionsv1alpha1.Object",

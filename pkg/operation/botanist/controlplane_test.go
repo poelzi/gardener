@@ -16,8 +16,10 @@ package botanist
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	cr "github.com/gardener/gardener/pkg/chartrenderer"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	fakeclientset "github.com/gardener/gardener/pkg/client/kubernetes/fake"
@@ -26,11 +28,14 @@ import (
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/operation"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
+	mockcontrolplane "github.com/gardener/gardener/pkg/operation/botanist/component/extensions/controlplane/mock"
+	mockinfrastructure "github.com/gardener/gardener/pkg/operation/botanist/component/extensions/infrastructure/mock"
 	"github.com/gardener/gardener/pkg/operation/garden"
 	"github.com/gardener/gardener/pkg/operation/shoot"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 
 	dnsv1alpha1 "github.com/gardener/external-dns-management/pkg/apis/dns/v1alpha1"
+	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
@@ -42,9 +47,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/version"
-	auditv1 "k8s.io/apiserver/pkg/apis/audit/v1"
-	auditv1alpha1 "k8s.io/apiserver/pkg/apis/audit/v1alpha1"
-	auditv1beta1 "k8s.io/apiserver/pkg/apis/audit/v1beta1"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -57,17 +59,33 @@ var _ = Describe("controlplane", func() {
 	)
 
 	var (
-		b          *Botanist
-		seedClient client.Client
-		s          *runtime.Scheme
-		ctx        context.Context
+		ctrl   *gomock.Controller
+		scheme *runtime.Scheme
+		client client.Client
 
+		infrastructure       *mockinfrastructure.MockInterface
+		controlPlane         *mockcontrolplane.MockInterface
+		controlPlaneExposure *mockcontrolplane.MockInterface
+		botanist             *Botanist
+
+		ctx               = context.TODO()
+		fakeErr           = fmt.Errorf("fake err")
 		dnsEntryTTL int64 = 1234
 	)
 
 	BeforeEach(func() {
-		ctx = context.TODO()
-		b = &Botanist{
+		ctrl = gomock.NewController(GinkgoT())
+
+		scheme = runtime.NewScheme()
+		Expect(dnsv1alpha1.AddToScheme(scheme)).NotTo(HaveOccurred())
+		Expect(corev1.AddToScheme(scheme)).NotTo(HaveOccurred())
+		client = fake.NewFakeClientWithScheme(scheme)
+
+		infrastructure = mockinfrastructure.NewMockInterface(ctrl)
+		controlPlane = mockcontrolplane.NewMockInterface(ctrl)
+		controlPlaneExposure = mockcontrolplane.NewMockInterface(ctrl)
+
+		botanist = &Botanist{
 			Operation: &operation.Operation{
 				Config: &config.GardenletConfiguration{
 					Controllers: &config.GardenletControllerConfiguration{
@@ -77,13 +95,16 @@ var _ = Describe("controlplane", func() {
 					},
 				},
 				Shoot: &shoot.Shoot{
-					Info: &v1beta1.Shoot{
+					Info: &gardencorev1beta1.Shoot{
 						ObjectMeta: metav1.ObjectMeta{Namespace: shootNS},
 					},
 					SeedNamespace: seedNS,
 					Components: &shoot.Components{
 						Extensions: &shoot.Extensions{
-							DNS: &shoot.DNS{},
+							DNS:                  &shoot.DNS{},
+							ControlPlane:         controlPlane,
+							ControlPlaneExposure: controlPlaneExposure,
+							Infrastructure:       infrastructure,
 						},
 					},
 				},
@@ -93,99 +114,22 @@ var _ = Describe("controlplane", func() {
 			},
 		}
 
-		s = runtime.NewScheme()
-		Expect(dnsv1alpha1.AddToScheme(s)).NotTo(HaveOccurred())
-		Expect(corev1.AddToScheme(s)).NotTo(HaveOccurred())
-
-		seedClient = fake.NewFakeClientWithScheme(s)
-
 		renderer := cr.NewWithServerVersion(&version.Info{})
 		mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{corev1.SchemeGroupVersion, dnsv1alpha1.SchemeGroupVersion})
 		mapper.Add(dnsv1alpha1.SchemeGroupVersion.WithKind("DNSOwner"), meta.RESTScopeRoot)
-		chartApplier := kubernetes.NewChartApplier(renderer, kubernetes.NewApplier(seedClient, mapper))
+		chartApplier := kubernetes.NewChartApplier(renderer, kubernetes.NewApplier(client, mapper))
 		Expect(chartApplier).NotTo(BeNil(), "should return chart applier")
 
 		fakeClientSet := fakeclientset.NewClientSetBuilder().
 			WithChartApplier(chartApplier).
-			WithDirectClient(seedClient).
+			WithAPIReader(client).
 			Build()
 
-		b.K8sSeedClient = fakeClientSet
+		botanist.K8sSeedClient = fakeClientSet
 	})
 
-	Describe("#ValidateAuditPolicyApiGroupVersionKind", func() {
-		var (
-			kind = "Policy"
-		)
-
-		It("should return false without error because of version incompatibility", func() {
-			incompatibilityMatrix := map[string][]schema.GroupVersionKind{
-				"1.10.0": {
-					auditv1.SchemeGroupVersion.WithKind(kind),
-				},
-				"1.11.0": {
-					auditv1.SchemeGroupVersion.WithKind(kind),
-				},
-			}
-
-			for shootVersion, gvks := range incompatibilityMatrix {
-				for _, gvk := range gvks {
-					ok, err := IsValidAuditPolicyVersion(shootVersion, &gvk)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(ok).To(BeFalse())
-				}
-			}
-		})
-
-		It("should return true without error because of version compatibility", func() {
-			compatibilityMatrix := map[string][]schema.GroupVersionKind{
-				"1.10.0": {
-					auditv1alpha1.SchemeGroupVersion.WithKind(kind),
-					auditv1beta1.SchemeGroupVersion.WithKind(kind),
-				},
-				"1.11.0": {
-					auditv1alpha1.SchemeGroupVersion.WithKind(kind),
-					auditv1beta1.SchemeGroupVersion.WithKind(kind),
-				},
-				"1.12.0": {
-					auditv1alpha1.SchemeGroupVersion.WithKind(kind),
-					auditv1beta1.SchemeGroupVersion.WithKind(kind),
-					auditv1.SchemeGroupVersion.WithKind(kind),
-				},
-				"1.13.0": {
-					auditv1alpha1.SchemeGroupVersion.WithKind(kind),
-					auditv1beta1.SchemeGroupVersion.WithKind(kind),
-					auditv1.SchemeGroupVersion.WithKind(kind),
-				},
-				"1.14.0": {
-					auditv1alpha1.SchemeGroupVersion.WithKind(kind),
-					auditv1beta1.SchemeGroupVersion.WithKind(kind),
-					auditv1.SchemeGroupVersion.WithKind(kind),
-				},
-				"1.15.0": {
-					auditv1alpha1.SchemeGroupVersion.WithKind(kind),
-					auditv1beta1.SchemeGroupVersion.WithKind(kind),
-					auditv1.SchemeGroupVersion.WithKind(kind),
-				},
-			}
-
-			for shootVersion, gvks := range compatibilityMatrix {
-				for _, gvk := range gvks {
-					ok, err := IsValidAuditPolicyVersion(shootVersion, &gvk)
-					Expect(err).ToNot(HaveOccurred())
-					Expect(ok).To(BeTrue())
-				}
-			}
-		})
-
-		It("should return false with error because of not valid semver version", func() {
-			shootVersion := "1.ab.0"
-			gvk := auditv1.SchemeGroupVersion.WithKind(kind)
-
-			ok, err := IsValidAuditPolicyVersion(shootVersion, &gvk)
-			Expect(err).To(HaveOccurred())
-			Expect(ok).To(BeFalse())
-		})
+	AfterEach(func() {
+		ctrl.Finish()
 	})
 
 	DescribeTable("#getResourcesForAPIServer",
@@ -222,48 +166,47 @@ var _ = Describe("controlplane", func() {
 
 	Context("setAPIServerAddress", func() {
 		It("does nothing when DNS is disabled", func() {
-			b.Shoot.DisableDNS = true
+			botanist.Shoot.DisableDNS = true
 
-			b.setAPIServerAddress("1.2.3.4", seedClient)
+			botanist.setAPIServerAddress("1.2.3.4", client)
 
-			Expect(b.Shoot.Components.Extensions.DNS.InternalOwner).To(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.InternalEntry).To(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalOwner).To(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalEntry).To(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalOwner).To(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalEntry).To(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalOwner).To(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalEntry).To(BeNil())
 		})
 
 		It("sets owners and entries which create DNSOwner and DNSEntry", func() {
-			b.Shoot.Info.Status.ClusterIdentity = pointer.StringPtr("shoot-cluster-identity")
-			b.Shoot.DisableDNS = false
-			b.Shoot.Info.Spec.DNS = &v1beta1.DNS{Domain: pointer.StringPtr("foo")}
-			b.Shoot.InternalClusterDomain = "bar"
-			b.Shoot.ExternalClusterDomain = pointer.StringPtr("baz")
-			b.Shoot.ExternalDomain = &garden.Domain{Provider: "valid-provider"}
-			b.Garden.InternalDomain = &garden.Domain{Provider: "valid-provider"}
+			botanist.Shoot.Info.Status.ClusterIdentity = pointer.StringPtr("shoot-cluster-identity")
+			botanist.Shoot.DisableDNS = false
+			botanist.Shoot.Info.Spec.DNS = &gardencorev1beta1.DNS{Domain: pointer.StringPtr("foo")}
+			botanist.Shoot.InternalClusterDomain = "bar"
+			botanist.Shoot.ExternalClusterDomain = pointer.StringPtr("baz")
+			botanist.Shoot.ExternalDomain = &garden.Domain{Provider: "valid-provider"}
+			botanist.Garden.InternalDomain = &garden.Domain{Provider: "valid-provider"}
 
-			b.setAPIServerAddress("1.2.3.4", seedClient)
+			botanist.setAPIServerAddress("1.2.3.4", client)
 
-			Expect(b.Shoot.Components.Extensions.DNS.InternalOwner).ToNot(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.InternalOwner.Deploy(ctx)).ToNot(HaveOccurred())
-			Expect(b.Shoot.Components.Extensions.DNS.InternalEntry).ToNot(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.InternalEntry.Deploy(ctx)).ToNot(HaveOccurred())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalOwner).ToNot(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalOwner.Deploy(ctx)).ToNot(HaveOccurred())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalEntry).ToNot(BeNil())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalEntry.Deploy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalOwner).ToNot(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalOwner.Deploy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalEntry).ToNot(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalEntry.Deploy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalOwner).ToNot(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalOwner.Deploy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalEntry).ToNot(BeNil())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalEntry.Deploy(ctx)).ToNot(HaveOccurred())
 
 			internalOwner := &dnsv1alpha1.DNSOwner{}
-			err := seedClient.Get(ctx, types.NamespacedName{Name: seedNS + "-internal"}, internalOwner)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(client.Get(ctx, types.NamespacedName{Name: seedNS + "-internal"}, internalOwner)).ToNot(HaveOccurred())
+
 			internalEntry := &dnsv1alpha1.DNSEntry{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: "internal", Namespace: seedNS}, internalEntry)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(client.Get(ctx, types.NamespacedName{Name: "internal", Namespace: seedNS}, internalEntry)).ToNot(HaveOccurred())
+
 			externalOwner := &dnsv1alpha1.DNSOwner{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: seedNS + "-external"}, externalOwner)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(client.Get(ctx, types.NamespacedName{Name: seedNS + "-external"}, externalOwner)).ToNot(HaveOccurred())
+
 			externalEntry := &dnsv1alpha1.DNSEntry{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: "external", Namespace: seedNS}, externalEntry)
-			Expect(err).ToNot(HaveOccurred())
+			Expect(client.Get(ctx, types.NamespacedName{Name: "external", Namespace: seedNS}, externalEntry)).ToNot(HaveOccurred())
 
 			Expect(internalOwner).To(DeepDerivativeEqual(&dnsv1alpha1.DNSOwner{
 				ObjectMeta: metav1.ObjectMeta{
@@ -310,30 +253,28 @@ var _ = Describe("controlplane", func() {
 				},
 			}))
 
-			Expect(b.Shoot.Components.Extensions.DNS.InternalOwner.Destroy(ctx)).ToNot(HaveOccurred())
-			Expect(b.Shoot.Components.Extensions.DNS.InternalEntry.Destroy(ctx)).ToNot(HaveOccurred())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalOwner.Destroy(ctx)).ToNot(HaveOccurred())
-			Expect(b.Shoot.Components.Extensions.DNS.ExternalEntry.Destroy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalOwner.Destroy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.InternalEntry.Destroy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalOwner.Destroy(ctx)).ToNot(HaveOccurred())
+			Expect(botanist.Shoot.Components.Extensions.DNS.ExternalEntry.Destroy(ctx)).ToNot(HaveOccurred())
 
 			internalOwner = &dnsv1alpha1.DNSOwner{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: seedNS + "-internal"}, internalOwner)
-			Expect(err).To(BeNotFoundError())
+			Expect(client.Get(ctx, types.NamespacedName{Name: seedNS + "-internal"}, internalOwner)).To(BeNotFoundError())
+
 			internalEntry = &dnsv1alpha1.DNSEntry{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: "internal", Namespace: seedNS}, internalEntry)
-			Expect(err).To(BeNotFoundError())
+			Expect(client.Get(ctx, types.NamespacedName{Name: "internal", Namespace: seedNS}, internalEntry)).To(BeNotFoundError())
+
 			externalOwner = &dnsv1alpha1.DNSOwner{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: seedNS + "-external"}, externalOwner)
-			Expect(err).To(BeNotFoundError())
+			Expect(client.Get(ctx, types.NamespacedName{Name: seedNS + "-external"}, externalOwner)).To(BeNotFoundError())
+
 			externalEntry = &dnsv1alpha1.DNSEntry{}
-			err = seedClient.Get(ctx, types.NamespacedName{Name: "external", Namespace: seedNS}, externalEntry)
-			Expect(err).To(BeNotFoundError())
+			Expect(client.Get(ctx, types.NamespacedName{Name: "external", Namespace: seedNS}, externalEntry)).To(BeNotFoundError())
 		})
 	})
 
 	Describe("SNIPhase", func() {
-		var (
-			svc *corev1.Service
-		)
+		var svc *corev1.Service
+
 		BeforeEach(func() {
 			gardenletfeatures.RegisterFeatureGates()
 
@@ -348,35 +289,32 @@ var _ = Describe("controlplane", func() {
 		Context("sni enabled", func() {
 			BeforeEach(func() {
 				Expect(gardenletfeatures.FeatureGate.Set("APIServerSNI=true")).ToNot(HaveOccurred())
-				b.Garden.InternalDomain = &garden.Domain{Provider: "some-provider"}
-				b.Shoot.Info.Spec.DNS = &v1beta1.DNS{Domain: pointer.StringPtr("foo")}
-				b.Shoot.ExternalClusterDomain = pointer.StringPtr("baz")
-				b.Shoot.ExternalDomain = &garden.Domain{Provider: "valid-provider"}
+				botanist.Garden.InternalDomain = &garden.Domain{Provider: "some-provider"}
+				botanist.Shoot.Info.Spec.DNS = &gardencorev1beta1.DNS{Domain: pointer.StringPtr("foo")}
+				botanist.Shoot.ExternalClusterDomain = pointer.StringPtr("baz")
+				botanist.Shoot.ExternalDomain = &garden.Domain{Provider: "valid-provider"}
 			})
 
 			It("returns Enabled for not existing services", func() {
-				phase, err := b.SNIPhase(ctx)
-
+				phase, err := botanist.SNIPhase(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(phase).To(Equal(component.PhaseEnabled))
 			})
 
 			It("returns Enabling for service of type LoadBalancer", func() {
 				svc.Spec.Type = corev1.ServiceTypeLoadBalancer
-				Expect(seedClient.Create(ctx, svc)).NotTo(HaveOccurred())
+				Expect(client.Create(ctx, svc)).NotTo(HaveOccurred())
 
-				phase, err := b.SNIPhase(ctx)
-
+				phase, err := botanist.SNIPhase(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(phase).To(Equal(component.PhaseEnabling))
 			})
 
 			It("returns Enabled for service of type ClusterIP", func() {
 				svc.Spec.Type = corev1.ServiceTypeClusterIP
-				Expect(seedClient.Create(ctx, svc)).NotTo(HaveOccurred())
+				Expect(client.Create(ctx, svc)).NotTo(HaveOccurred())
 
-				phase, err := b.SNIPhase(ctx)
-
+				phase, err := botanist.SNIPhase(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(phase).To(Equal(component.PhaseEnabled))
 			})
@@ -385,13 +323,13 @@ var _ = Describe("controlplane", func() {
 				"return Enabled for service of type",
 				func(svcType corev1.ServiceType) {
 					svc.Spec.Type = svcType
-					Expect(seedClient.Create(ctx, svc)).NotTo(HaveOccurred())
+					Expect(client.Create(ctx, svc)).NotTo(HaveOccurred())
 
-					phase, err := b.SNIPhase(ctx)
-
+					phase, err := botanist.SNIPhase(ctx)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(phase).To(Equal(component.PhaseEnabled))
 				},
+
 				Entry("ExternalName", corev1.ServiceTypeExternalName),
 				Entry("NodePort", corev1.ServiceTypeNodePort),
 			)
@@ -403,18 +341,16 @@ var _ = Describe("controlplane", func() {
 			})
 
 			It("returns Disabled for not existing services", func() {
-				phase, err := b.SNIPhase(ctx)
-
+				phase, err := botanist.SNIPhase(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(phase).To(Equal(component.PhaseDisabled))
 			})
 
 			It("returns Disabling for service of type ClusterIP", func() {
 				svc.Spec.Type = corev1.ServiceTypeClusterIP
-				Expect(seedClient.Create(ctx, svc)).NotTo(HaveOccurred())
+				Expect(client.Create(ctx, svc)).NotTo(HaveOccurred())
 
-				phase, err := b.SNIPhase(ctx)
-
+				phase, err := botanist.SNIPhase(ctx)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(phase).To(Equal(component.PhaseDisabling))
 			})
@@ -423,17 +359,102 @@ var _ = Describe("controlplane", func() {
 				"return Disabled for service of type",
 				func(svcType corev1.ServiceType) {
 					svc.Spec.Type = svcType
-					Expect(seedClient.Create(ctx, svc)).NotTo(HaveOccurred())
+					Expect(client.Create(ctx, svc)).NotTo(HaveOccurred())
 
-					phase, err := b.SNIPhase(ctx)
-
+					phase, err := botanist.SNIPhase(ctx)
 					Expect(err).NotTo(HaveOccurred())
 					Expect(phase).To(Equal(component.PhaseDisabled))
 				},
+
 				Entry("ExternalName", corev1.ServiceTypeExternalName),
 				Entry("LoadBalancer", corev1.ServiceTypeLoadBalancer),
 				Entry("NodePort", corev1.ServiceTypeNodePort),
 			)
+		})
+	})
+
+	Describe("#DeployControlPlane", func() {
+		var infrastructureStatus = &runtime.RawExtension{Raw: []byte("infra-status")}
+
+		BeforeEach(func() {
+			infrastructure.EXPECT().ProviderStatus().Return(infrastructureStatus)
+			controlPlane.EXPECT().SetInfrastructureProviderStatus(infrastructureStatus)
+		})
+
+		Context("deploy", func() {
+			It("should deploy successfully", func() {
+				controlPlane.EXPECT().Deploy(ctx)
+				Expect(botanist.DeployControlPlane(ctx)).To(Succeed())
+			})
+
+			It("should return the error during deployment", func() {
+				controlPlane.EXPECT().Deploy(ctx).Return(fakeErr)
+				Expect(botanist.DeployControlPlane(ctx)).To(MatchError(fakeErr))
+			})
+		})
+
+		Context("restore", func() {
+			var shootState = &gardencorev1alpha1.ShootState{}
+
+			BeforeEach(func() {
+				botanist.ShootState = shootState
+				botanist.Shoot.Info = &gardencorev1beta1.Shoot{
+					Status: gardencorev1beta1.ShootStatus{
+						LastOperation: &gardencorev1beta1.LastOperation{
+							Type: gardencorev1beta1.LastOperationTypeRestore,
+						},
+					},
+				}
+			})
+
+			It("should restore successfully", func() {
+				controlPlane.EXPECT().Restore(ctx, shootState)
+				Expect(botanist.DeployControlPlane(ctx)).To(Succeed())
+			})
+
+			It("should return the error during restoration", func() {
+				controlPlane.EXPECT().Restore(ctx, shootState).Return(fakeErr)
+				Expect(botanist.DeployControlPlane(ctx)).To(MatchError(fakeErr))
+			})
+		})
+	})
+
+	Describe("#DeployControlPlaneExposure()", func() {
+		Context("deploy", func() {
+			It("should deploy successfully", func() {
+				controlPlaneExposure.EXPECT().Deploy(ctx)
+				Expect(botanist.DeployControlPlaneExposure(ctx)).To(Succeed())
+			})
+
+			It("should return the error during deployment", func() {
+				controlPlaneExposure.EXPECT().Deploy(ctx).Return(fakeErr)
+				Expect(botanist.DeployControlPlaneExposure(ctx)).To(MatchError(fakeErr))
+			})
+		})
+
+		Context("restore", func() {
+			var shootState = &gardencorev1alpha1.ShootState{}
+
+			BeforeEach(func() {
+				botanist.ShootState = shootState
+				botanist.Shoot.Info = &gardencorev1beta1.Shoot{
+					Status: gardencorev1beta1.ShootStatus{
+						LastOperation: &gardencorev1beta1.LastOperation{
+							Type: gardencorev1beta1.LastOperationTypeRestore,
+						},
+					},
+				}
+			})
+
+			It("should restore successfully", func() {
+				controlPlaneExposure.EXPECT().Restore(ctx, shootState)
+				Expect(botanist.DeployControlPlaneExposure(ctx)).To(Succeed())
+			})
+
+			It("should return the error during restoration", func() {
+				controlPlaneExposure.EXPECT().Restore(ctx, shootState).Return(fakeErr)
+				Expect(botanist.DeployControlPlaneExposure(ctx)).To(MatchError(fakeErr))
+			})
 		})
 	})
 })

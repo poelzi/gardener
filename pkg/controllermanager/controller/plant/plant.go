@@ -16,23 +16,24 @@ package plant
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
-	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
-	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllermanager"
 	"github.com/gardener/gardener/pkg/controllermanager/apis/config"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/logger"
 
 	"github.com/prometheus/client_golang/prometheus"
-	kubeinformers "k8s.io/client-go/informers"
-	kubecorev1listers "k8s.io/client-go/listers/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // FinalizerName is the name of the Plant finalizer.
@@ -40,79 +41,68 @@ const FinalizerName = "core.gardener.cloud/plant"
 
 // Controller controls Plant.
 type Controller struct {
-	k8sInformers kubeinformers.SharedInformerFactory
-	config       *config.ControllerManagerConfiguration
+	gardenClient client.Client
 
-	recorder record.EventRecorder
+	reconciler     reconcile.Reconciler
+	hasSyncedFuncs []cache.InformerSynced
 
-	secretLister kubecorev1listers.SecretLister
-	secretSynced cache.InformerSynced
-
-	plantControl ControlInterface
-	plantLister  gardencorelisters.PlantLister
-	plantSynced  cache.InformerSynced
-
-	plantQueue workqueue.RateLimitingInterface
-
+	plantQueue             workqueue.RateLimitingInterface
 	workerCh               chan int
 	numberOfRunningWorkers int
 }
 
 // NewController instantiates a new Plant controller.
-func NewController(clientMap clientmap.ClientMap,
-	gardenCoreInformerFactory gardencoreinformers.SharedInformerFactory,
-	kubeInformerFactory kubeinformers.SharedInformerFactory,
+func NewController(
+	ctx context.Context,
+	clientMap clientmap.ClientMap,
 	config *config.ControllerManagerConfiguration,
-	recorder record.EventRecorder) *Controller {
-	var (
-		gardenCoreInformer = gardenCoreInformerFactory.Core().V1beta1()
-		kubeInfomer        = kubeInformerFactory.Core().V1()
-
-		plantInformer = gardenCoreInformer.Plants()
-		plantLister   = plantInformer.Lister()
-
-		secretInformer = kubeInfomer.Secrets()
-		secretLister   = secretInformer.Lister()
-
-		plantQueue = workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "plant")
-	)
-
-	controller := &Controller{
-		k8sInformers: kubeInformerFactory,
-
-		config:   config,
-		recorder: recorder,
-
-		secretLister: secretLister,
-		plantLister:  plantLister,
-		plantQueue:   plantQueue,
-		plantControl: NewDefaultPlantControl(clientMap, recorder, config, secretLister),
-
-		workerCh: make(chan int),
+) (
+	*Controller,
+	error,
+) {
+	gardenClient, err := clientMap.GetClient(ctx, keys.ForGarden())
+	if err != nil {
+		return nil, err
 	}
 
-	controller.plantSynced = plantInformer.Informer().HasSynced
-	plantInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	plantInformer, err := gardenClient.Cache().GetInformer(ctx, &gardencorev1beta1.Plant{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Plant Informer: %w", err)
+	}
+	secretInformer, err := gardenClient.Cache().GetInformer(ctx, &corev1.Secret{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Secret Informer: %w", err)
+	}
+
+	controller := &Controller{
+		gardenClient: gardenClient.Client(),
+		reconciler:   NewPlantReconciler(logger.Logger, clientMap, gardenClient.Client(), config.Controllers.Plant),
+		plantQueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "plant"),
+		workerCh:     make(chan int),
+	}
+
+	plantInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    controller.plantAdd,
 		UpdateFunc: controller.plantUpdate,
 		DeleteFunc: controller.plantDelete,
 	})
 
-	controller.secretSynced = secretInformer.Informer().HasSynced
-	secretInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    controller.reconcilePlantForMatchingSecret,
-		UpdateFunc: controller.plantSecretUpdate,
-		DeleteFunc: controller.reconcilePlantForMatchingSecret,
+	secretInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { controller.reconcilePlantForMatchingSecret(ctx, obj) },
+		UpdateFunc: func(oldObj, newObj interface{}) { controller.plantSecretUpdate(ctx, oldObj, newObj) },
+		DeleteFunc: func(obj interface{}) { controller.reconcilePlantForMatchingSecret(ctx, obj) },
 	})
 
-	return controller
+	controller.hasSyncedFuncs = append(controller.hasSyncedFuncs, plantInformer.HasSynced, secretInformer.HasSynced)
+
+	return controller, nil
 }
 
 // Run runs the Controller until the given stop channel can be read from.
 func (c *Controller) Run(ctx context.Context, workers int) {
 	var waitGroup sync.WaitGroup
 
-	if !cache.WaitForCacheSync(ctx.Done(), c.plantSynced, c.secretSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.hasSyncedFuncs...) {
 		logger.Logger.Error("Timed out waiting for caches to sync")
 		return
 	}
@@ -127,7 +117,7 @@ func (c *Controller) Run(ctx context.Context, workers int) {
 	logger.Logger.Info("Plant controller initialized.")
 
 	for i := 0; i < workers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.plantQueue, "plant", func(key string) error { return c.reconcilePlantKey(ctx, key) }, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.plantQueue, "Plant", c.reconciler, &waitGroup, c.workerCh)
 	}
 
 	// Shutdown handling

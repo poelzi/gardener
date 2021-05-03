@@ -19,7 +19,7 @@ ingress:
   # admin : admin base64 encoded
   basicAuthSecret: YWRtaW46JGFwcjEkSWRSaVM5c3MkR3U1MHMxaGUwL2Z6Tzh2elE4S1BEMQ==
 
-kubernetesVersion: 1.13.1
+kubernetesVersion: 1.15.1
 
 konnectivityTunnel:
   enabled: false
@@ -69,19 +69,36 @@ allowedMetrics:
   - process_max_fds
   - process_open_fds
   kubeAPIServer:
-  - apiserver_audit_error_total
+  - authentication_attempts
+  - authenticated_user_requests
+  - apiserver_admission_controller_admission_duration_seconds_bucket
+  - apiserver_admission_webhook_admission_duration_seconds_bucket
+  - apiserver_admission_step_admission_duration_seconds_bucket
+  - apiserver_admission_webhook_rejection_count
   - apiserver_audit_event_total
+  - apiserver_audit_error_total
+  - apiserver_audit_requests_rejected_total
+  - apiserver_request_total
+  - apiserver_request_count
+  - apiserver_latency_seconds
   - apiserver_current_inflight_requests
   - apiserver_current_inqueue_requests
-  - apiserver_dropped_requests_total
-  - apiserver_registered_watchers
-  - apiserver_request_count
+  - apiserver_response_sizes_bucket
   - apiserver_request_duration_seconds_bucket
   - apiserver_request_terminations_total
-  - apiserver_request_total
+  - apiserver_storage_transformation_duration_seconds_bucket
+  - apiserver_storage_transformation_operations_total
+  - apiserver_registered_watchers
+  - apiserver_init_events_total
+  - apiserver_watch_events_sizes_bucket
+  - apiserver_watch_events_total
+  - etcd_db_total_size_in_bytes
   - etcd_object_counts
+  - etcd_request_duration_seconds_bucket
   - process_max_fds
   - process_open_fds
+  - watch_cache_capacity_increase_total
+  - watch_cache_capacity_decrease_total
   kubeProxy:
   - kubeproxy_network_programming_duration_seconds_bucket
   - kubeproxy_network_programming_duration_seconds_count
@@ -103,6 +120,12 @@ allowedMetrics:
   - kube_deployment_status_replicas_available
   - kube_deployment_status_replicas_unavailable
   - kube_deployment_status_replicas_updated
+  - kube_replicaset_metadata_generation
+  - kube_replicaset_owner
+  - kube_replicaset_spec_replicas
+  - kube_replicaset_status_observed_generation
+  - kube_replicaset_status_replicas
+  - kube_replicaset_status_ready_replicas
   - kube_node_info
   - kube_node_labels
   - kube_node_spec_unschedulable

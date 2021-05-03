@@ -12,21 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-REGISTRY                            := eu.gcr.io/gardener-project/gardener
-APISERVER_IMAGE_REPOSITORY          := $(REGISTRY)/apiserver
-CONTROLLER_MANAGER_IMAGE_REPOSITORY := $(REGISTRY)/controller-manager
-SCHEDULER_IMAGE_REPOSITORY          := $(REGISTRY)/scheduler
-ADMISSION_IMAGE_REPOSITORY          := $(REGISTRY)/admission-controller
-SEED_ADMISSION_IMAGE_REPOSITORY     := $(REGISTRY)/seed-admission-controller
-GARDENLET_IMAGE_REPOSITORY          := $(REGISTRY)/gardenlet
-PUSH_LATEST_TAG                     := false
-VERSION                             := $(shell cat VERSION)
-EFFECTIVE_VERSION                   := $(VERSION)-$(shell git rev-parse HEAD)
-REPO_ROOT                           := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
-LOCAL_GARDEN_LABEL                  := local-garden
-REMOTE_GARDEN_LABEL                 := remote-garden
-DEV_SCREEN_NAME                     := gardener-dev
-CR_VERSION                          := $(shell go mod edit -json | jq -r '.Require[] | select(.Path=="sigs.k8s.io/controller-runtime") | .Version')
+REGISTRY                               := eu.gcr.io/gardener-project/gardener
+APISERVER_IMAGE_REPOSITORY             := $(REGISTRY)/apiserver
+CONTROLLER_MANAGER_IMAGE_REPOSITORY    := $(REGISTRY)/controller-manager
+SCHEDULER_IMAGE_REPOSITORY             := $(REGISTRY)/scheduler
+ADMISSION_IMAGE_REPOSITORY             := $(REGISTRY)/admission-controller
+SEED_ADMISSION_IMAGE_REPOSITORY        := $(REGISTRY)/seed-admission-controller
+GARDENLET_IMAGE_REPOSITORY             := $(REGISTRY)/gardenlet
+LANDSCAPER_GARDENLET_IMAGE_REPOSITORY  := $(REGISTRY)/landscaper-gardenlet
+PUSH_LATEST_TAG                        := false
+VERSION                                := $(shell cat VERSION)
+EFFECTIVE_VERSION                      := $(VERSION)-$(shell git rev-parse HEAD)
+REPO_ROOT                              := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
+LOCAL_GARDEN_LABEL                     := local-garden
+REMOTE_GARDEN_LABEL                    := remote-garden
+DEV_SCREEN_NAME                        := gardener-dev
+CR_VERSION                             := $(shell go list -m -f '{{ .Version }}' sigs.k8s.io/controller-runtime)
+ACTIVATE_SEEDAUTHORIZER                := false
 
 ifneq ($(strip $(shell git status --porcelain 2>/dev/null)),)
 	EFFECTIVE_VERSION := $(EFFECTIVE_VERSION)-dirty
@@ -46,7 +48,7 @@ dev-setup-register-gardener:
 
 .PHONY: local-garden-up
 local-garden-up:
-	@./hack/local-development/local-garden/start.sh $(LOCAL_GARDEN_LABEL)
+	@./hack/local-development/local-garden/start.sh $(LOCAL_GARDEN_LABEL) $(ACTIVATE_SEEDAUTHORIZER)
 
 .PHONY: local-garden-down
 local-garden-down:
@@ -102,6 +104,10 @@ start-seed-admission-controller:
 start-gardenlet:
 	@./hack/local-development/start-gardenlet
 
+.PHONY: start-landscaper-gardenlet
+start-landscaper-gardenlet:
+	@./hack/local-development/start-landscaper-gardenlet $(OPERATION)
+
 #################################################################
 # Rules related to binary build, Docker image build and release #
 #################################################################
@@ -113,12 +119,24 @@ install:
 .PHONY: docker-images
 docker-images:
 	@echo "Building docker images with version and tag $(EFFECTIVE_VERSION)"
-	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION) -t $(APISERVER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)          -t $(APISERVER_IMAGE_REPOSITORY):latest          -f Dockerfile --target apiserver .
-	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION) -t $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION) -t $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):latest -f Dockerfile --target controller-manager .
-	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION) -t $(SCHEDULER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)          -t $(SCHEDULER_IMAGE_REPOSITORY):latest          -f Dockerfile --target scheduler .
-	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION) -t $(ADMISSION_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)          -t $(ADMISSION_IMAGE_REPOSITORY):latest          -f Dockerfile --target admission-controller .
-	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION) -t $(SEED_ADMISSION_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)     -t $(SEED_ADMISSION_IMAGE_REPOSITORY):latest     -f Dockerfile --target seed-admission-controller .
-	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION) -t $(GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)          -t $(GARDENLET_IMAGE_REPOSITORY):latest          -f Dockerfile --target gardenlet .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(APISERVER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(APISERVER_IMAGE_REPOSITORY):latest            -f Dockerfile --target apiserver .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)    -t $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):latest   -f Dockerfile --target controller-manager .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(SCHEDULER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(SCHEDULER_IMAGE_REPOSITORY):latest            -f Dockerfile --target scheduler .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(ADMISSION_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(ADMISSION_IMAGE_REPOSITORY):latest            -f Dockerfile --target admission-controller .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(SEED_ADMISSION_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)        -t $(SEED_ADMISSION_IMAGE_REPOSITORY):latest       -f Dockerfile --target seed-admission-controller .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(GARDENLET_IMAGE_REPOSITORY):latest            -f Dockerfile --target gardenlet .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)  -t $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY):latest -f Dockerfile --target landscaper-gardenlet .
+
+.PHONY: docker-images-ppc
+docker-images-ppc:
+	@echo "Building docker images for IBM's POWER(ppc64le) with version and tag $(EFFECTIVE_VERSION)"
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(APISERVER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(APISERVER_IMAGE_REPOSITORY):latest            -f Dockerfile --target apiserver .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)    -t $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):latest   -f Dockerfile --target controller-manager .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(SCHEDULER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(SCHEDULER_IMAGE_REPOSITORY):latest            -f Dockerfile --target scheduler .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(ADMISSION_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(ADMISSION_IMAGE_REPOSITORY):latest            -f Dockerfile --target admission-controller .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(SEED_ADMISSION_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)        -t $(SEED_ADMISSION_IMAGE_REPOSITORY):latest       -f Dockerfile --target seed-admission-controller .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)             -t $(GARDENLET_IMAGE_REPOSITORY):latest            -f Dockerfile --target gardenlet .
+	@docker build --build-arg EFFECTIVE_VERSION=$(EFFECTIVE_VERSION)  -t $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)  -t $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY):latest -f Dockerfile --target landscaper-gardenlet .
 
 .PHONY: docker-login
 docker-login:
@@ -132,6 +150,7 @@ docker-push:
 	@if ! docker images $(ADMISSION_IMAGE_REPOSITORY) | awk '{ print $$2 }' | grep -q -F $(EFFECTIVE_VERSION); then echo "$(ADMISSION_IMAGE_REPOSITORY) version $(EFFECTIVE_VERSION) is not yet built. Please run 'make docker-images'"; false; fi
 	@if ! docker images $(SEED_ADMISSION_IMAGE_REPOSITORY) | awk '{ print $$2 }' | grep -q -F $(EFFECTIVE_VERSION); then echo "$(SEED_ADMISSION_IMAGE_REPOSITORY) version $(EFFECTIVE_VERSION) is not yet built. Please run 'make docker-images'"; false; fi
 	@if ! docker images $(GARDENLET_IMAGE_REPOSITORY) | awk '{ print $$2 }' | grep -q -F $(EFFECTIVE_VERSION); then echo "$(GARDENLET_IMAGE_REPOSITORY) version $(EFFECTIVE_VERSION) is not yet built. Please run 'make docker-images'"; false; fi
+	@if ! docker images $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY) | awk '{ print $$2 }' | grep -q -F $(EFFECTIVE_VERSION); then echo "$(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY) version $(EFFECTIVE_VERSION) is not yet built. Please run 'make docker-images'"; false; fi
 	@gcloud docker -- push $(APISERVER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)
 	@if [[ "$(PUSH_LATEST_TAG)" == "true" ]]; then gcloud docker -- push $(APISERVER_IMAGE_REPOSITORY):latest; fi
 	@gcloud docker -- push $(CONTROLLER_MANAGER_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)
@@ -144,6 +163,8 @@ docker-push:
 	@if [[ "$(PUSH_LATEST_TAG)" == "true" ]]; then gcloud docker -- push $(SEED_ADMISSION_IMAGE_REPOSITORY):latest; fi
 	@gcloud docker -- push $(GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)
 	@if [[ "$(PUSH_LATEST_TAG)" == "true" ]]; then gcloud docker -- push $(GARDENLET_IMAGE_REPOSITORY):latest; fi
+	@gcloud docker -- push $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY):$(EFFECTIVE_VERSION)
+	@if [[ "$(PUSH_LATEST_TAG)" == "true" ]]; then gcloud docker -- push $(LANDSCAPER_GARDENLET_IMAGE_REPOSITORY):latest; fi
 
 #####################################################################
 # Rules for verification, formatting, linting, testing and cleaning #
@@ -162,18 +183,21 @@ vendor-requirements:
 
 .PHONY: install-extra-requirements
 install-extra-requirements:
+	@./hack/install-promtool.sh
 	@./hack/install-requirements.sh
 
 .PHONY: revendor
 revendor:
-	@GO111MODULE=on go mod vendor
-	@GO111MODULE=on go mod tidy
-	@curl -sSLo hack/setup-envtest.sh https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/$(CR_VERSION)/hack/setup-envtest.sh
-	@cd vendor/k8s.io/code-generator; go mod vendor
+	GO111MODULE=on go mod vendor
+	GO111MODULE=on go mod tidy
+	curl -sSLo hack/setup-envtest.sh https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/$(CR_VERSION)/hack/setup-envtest.sh
+	cd vendor/k8s.io/code-generator; go mod vendor
+# TODO: Remove this once k8s.io/apimachinery is upgraded to v0.20.7, see https://github.com/kubernetes/kubernetes/pull/101326
+	sed -i '169s/if skippy < 0 {/if (skippy < 0) || (iNdEx+skippy) < 0 {/' vendor/k8s.io/apimachinery/pkg/api/resource/quantity_proto.go
 
 .PHONY: clean
 clean:
-	@hack/clean.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
+	@hack/clean.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/... ./landscaper/...
 
 .PHONY: check-generate
 check-generate:
@@ -184,9 +208,19 @@ check:
 	@hack/check.sh --golangci-lint-config=./.golangci.yaml ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
 	@hack/check-charts.sh ./charts
 
+# We need to explicitly pass GO111MODULE=off to k8s.io/code-generator as it is significantly slower otherwise,
+# see https://github.com/kubernetes/code-generator/issues/100.
 .PHONY: generate
 generate:
-	@hack/generate.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./test/...
+	@GO111MODULE=off hack/update-protobuf.sh
+	@GO111MODULE=off hack/update-codegen.sh --parallel
+	@hack/generate-parallel.sh cmd extensions pkg plugin landscaper test
+
+.PHONY: generate-sequential
+generate-sequential:
+	@GO111MODULE=off hack/update-protobuf.sh
+	@GO111MODULE=off hack/update-codegen.sh
+	@hack/generate.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./landscaper/... ./test/...
 
 .PHONY: generate-extensions-crds
 generate-extensions-crds:
@@ -194,16 +228,16 @@ generate-extensions-crds:
 
 .PHONY: format
 format:
-	@./hack/format.sh ./cmd ./extensions ./pkg ./plugin ./test
+	@./hack/format.sh ./cmd ./extensions ./pkg ./plugin ./test ./landscaper
 
 .PHONY: test
 test:
-	@./hack/test.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/...
+	@./hack/test.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./landscaper/...
 	$(MAKE) test-prometheus
 
 .PHONY: test-cov
 test-cov:
-	@./hack/test-cover.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/...
+	@./hack/test-cover.sh ./cmd/... ./extensions/... ./pkg/... ./plugin/... ./landscaper/...
 	$(MAKE) test-prometheus
 
 .PHONY: test-cov-clean

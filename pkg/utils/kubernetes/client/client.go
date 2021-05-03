@@ -96,27 +96,6 @@ func (f *finalizer) HasFinalizers(obj client.Object) (bool, error) {
 	return len(obj.GetFinalizers()) > 0, nil
 }
 
-type crdFinalizer struct {
-	finalizer
-}
-
-// NewCRDFinalizer instantiates a CustomResourceDefinition finalizer.
-func NewCRDFinalizer() Finalizer {
-	return &crdFinalizer{finalizer: finalizer{}}
-}
-
-// Finalize removes given CustomResourceDefinition from the Kubernetes store.
-// For Kubernetes < v1.15 it is required to file a DELETE request after
-// patching .meta.finalizers of the CustomResourceDefinition.
-// Ref: https://github.com/kubernetes/kubernetes/issues/84354
-func (f *crdFinalizer) Finalize(ctx context.Context, c client.Client, obj client.Object) error {
-	if err := f.finalizer.Finalize(ctx, c, obj); err != nil {
-		return err
-	}
-
-	return client.IgnoreNotFound(c.Delete(ctx, obj))
-}
-
 type namespaceFinalizer struct {
 	namespaceInterface typedcorev1.NamespaceInterface
 }
@@ -139,7 +118,7 @@ func (f *namespaceFinalizer) Finalize(ctx context.Context, c client.Client, obj 
 	namespace.Spec.Finalizers = nil
 
 	// TODO (ialidzhikov): Use controller-runtime client once subresources are
-	// suported - https://github.com/kubernetes-sigs/controller-runtime/issues/172.
+	// supported - https://github.com/kubernetes-sigs/controller-runtime/issues/172.
 	_, err := f.namespaceInterface.Finalize(ctx, namespace, kubernetes.DefaultUpdateOptions())
 	return err
 }
@@ -170,11 +149,6 @@ var defaultCleaner = NewCleaner(utiltime.DefaultOps(), defaultFinalizer)
 // DefaultCleaner is the default Cleaner.
 func DefaultCleaner() Cleaner {
 	return defaultCleaner
-}
-
-// NewCRDCleaner instantiates a new Cleaner with ability to clean CustomResourceDefinitions.
-func NewCRDCleaner() Cleaner {
-	return NewCleaner(utiltime.DefaultOps(), NewCRDFinalizer())
 }
 
 // NewNamespaceCleaner instantiates a new Cleaner with ability to clean namespaces.
@@ -240,6 +214,7 @@ func DefaultGoneEnsurer() GoneEnsurer {
 }
 
 // GoneBeforeEnsurer returns an implementation of `GoneEnsurer` which is time aware.
+// It ensures that only resources created <before> are deleted.
 func GoneBeforeEnsurer(before time.Time) GoneEnsurer {
 	return &beforeGoneEnsurer{
 		time: before,
@@ -250,7 +225,7 @@ type beforeGoneEnsurer struct {
 	time time.Time
 }
 
-// EnsureGoneBefore ensures that no given object or objects in the list exist before the given time.
+// EnsureGone ensures that no given object or objects in the list are deleted, if they were created before the given time.
 func (b *beforeGoneEnsurer) EnsureGone(ctx context.Context, c client.Client, obj runtime.Object, opts ...client.ListOption) error {
 	if err := EnsureGone(ctx, c, obj, opts...); err != nil {
 		remainingObjs, ok := err.(objectsRemaining)
@@ -305,11 +280,11 @@ func ensureCollectionGone(ctx context.Context, c client.Client, list client.Obje
 }
 
 func (cl *cleaner) clean(ctx context.Context, c client.Client, obj client.Object, cleanOptions *CleanOptions) error {
-	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
+	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); client.IgnoreNotFound(err) != nil {
 		return err
 	}
 
-	return cl.doClean(ctx, c, obj, cleanOptions)
+	return client.IgnoreNotFound(cl.doClean(ctx, c, obj, cleanOptions))
 }
 
 func (cl *cleaner) cleanCollection(

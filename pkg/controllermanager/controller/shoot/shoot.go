@@ -21,8 +21,6 @@ import (
 	"time"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
-	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllermanager"
@@ -34,9 +32,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeinformers "k8s.io/client-go/informers"
-	kubecorev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -46,110 +42,112 @@ import (
 
 // Controller controls Shoots.
 type Controller struct {
-	clientMap              clientmap.ClientMap
-	k8sGardenCoreInformers gardencoreinformers.SharedInformerFactory
+	config *config.ControllerManagerConfiguration
 
-	config                      *config.ControllerManagerConfiguration
-	recorder                    record.EventRecorder
-	maintenanceControl          MaintenanceControlInterface
-	quotaControl                QuotaControlInterface
-	hibernationScheduleRegistry HibernationScheduleRegistry
+	shootHibernationReconciler reconcile.Reconciler
+	shootMaintenanceReconciler reconcile.Reconciler
+	shootQuotaReconciler       reconcile.Reconciler
+	shootRefReconciler         reconcile.Reconciler
+	shootRetryReconciler       reconcile.Reconciler
+	configMapReconciler        reconcile.Reconciler
+	hasSyncedFuncs             []cache.InformerSynced
 
-	shootLister     gardencorelisters.ShootLister
-	configMapLister kubecorev1listers.ConfigMapLister
-
-	shootMaintenanceQueue workqueue.RateLimitingInterface
-	shootQuotaQueue       workqueue.RateLimitingInterface
-	shootHibernationQueue workqueue.RateLimitingInterface
-	shootReferenceQueue   workqueue.RateLimitingInterface
-	configMapQueue        workqueue.RateLimitingInterface
-
-	hasSyncedFuncs []cache.InformerSynced
-	startFuncs     []func(<-chan struct{})
-
-	shootRefReconciler reconcile.Reconciler
-
+	shootMaintenanceQueue  workqueue.RateLimitingInterface
+	shootQuotaQueue        workqueue.RateLimitingInterface
+	shootHibernationQueue  workqueue.RateLimitingInterface
+	shootReferenceQueue    workqueue.RateLimitingInterface
+	shootRetryQueue        workqueue.RateLimitingInterface
+	configMapQueue         workqueue.RateLimitingInterface
 	numberOfRunningWorkers int
 	workerCh               chan int
 }
 
 // NewShootController takes a ClientMap, a GardenerInformerFactory, a KubernetesInformerFactory, a
 // ControllerManagerConfig struct and an EventRecorder to create a new Shoot controller.
-func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers gardencoreinformers.SharedInformerFactory, kubeInformerFactory kubeinformers.SharedInformerFactory, config *config.ControllerManagerConfiguration, recorder record.EventRecorder) (*Controller, error) {
+func NewShootController(
+	ctx context.Context,
+	clientMap clientmap.ClientMap,
+	kubeInformerFactory kubeinformers.SharedInformerFactory,
+	config *config.ControllerManagerConfiguration,
+	recorder record.EventRecorder,
+) (
+	*Controller,
+	error,
+) {
+	gardenClient, err := clientMap.GetClient(ctx, keys.ForGarden())
+	if err != nil {
+		return nil, err
+	}
+
+	shootInformer, err := gardenClient.Cache().GetInformer(ctx, &gardencorev1beta1.Shoot{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Shoot Informer: %w", err)
+	}
+	configMapInformer, err := gardenClient.Cache().GetInformer(ctx, &corev1.ConfigMap{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ConfigMap Informer: %w", err)
+	}
+
 	var (
-		gardenCoreV1beta1Informer = k8sGardenCoreInformers.Core().V1beta1()
-		corev1Informer            = kubeInformerFactory.Core().V1()
-
-		shootInformer = gardenCoreV1beta1Informer.Shoots()
-		shootLister   = shootInformer.Lister()
-
-		configMapInformer = corev1Informer.ConfigMaps()
-		configMapLister   = configMapInformer.Lister()
+		corev1Informer = kubeInformerFactory.Core().V1()
+		secretInformer = corev1Informer.Secrets()
+		secretLister   = secretInformer.Lister()
 	)
 
 	shootController := &Controller{
-		clientMap:              clientMap,
-		k8sGardenCoreInformers: k8sGardenCoreInformers,
+		config: config,
 
-		config:                      config,
-		recorder:                    recorder,
-		maintenanceControl:          NewDefaultMaintenanceControl(clientMap, gardenCoreV1beta1Informer, config.Controllers.ShootMaintenance, recorder),
-		quotaControl:                NewDefaultQuotaControl(clientMap, gardenCoreV1beta1Informer),
-		hibernationScheduleRegistry: NewHibernationScheduleRegistry(),
-
-		shootLister:     shootLister,
-		configMapLister: configMapLister,
+		shootHibernationReconciler: NewShootHibernationReconciler(logger.Logger, gardenClient, NewHibernationScheduleRegistry(), recorder),
+		shootMaintenanceReconciler: NewShootMaintenanceReconciler(logger.Logger, gardenClient, config.Controllers.ShootMaintenance, recorder),
+		shootQuotaReconciler:       NewShootQuotaReconciler(logger.Logger, gardenClient.Client(), config.Controllers.ShootQuota),
+		configMapReconciler:        NewConfigMapReconciler(logger.Logger, gardenClient.Client()),
+		shootRetryReconciler:       NewShootRetryReconciler(logger.Logger, gardenClient.Client(), config.Controllers.ShootRetry),
 
 		shootMaintenanceQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "shoot-maintenance"),
 		shootQuotaQueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "shoot-quota"),
 		shootHibernationQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "shoot-hibernation"),
 		shootReferenceQueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "shoot-references"),
+		shootRetryQueue:       workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "shoot-retry"),
 		configMapQueue:        workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "configmaps"),
 
 		workerCh: make(chan int),
 	}
 
-	shootInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	shootInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    shootController.shootMaintenanceAdd,
 		UpdateFunc: shootController.shootMaintenanceUpdate,
 		DeleteFunc: shootController.shootMaintenanceDelete,
 	})
 
-	shootInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	shootInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    shootController.shootQuotaAdd,
 		DeleteFunc: shootController.shootQuotaDelete,
 	})
 
-	shootInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	shootInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    shootController.shootHibernationAdd,
 		UpdateFunc: shootController.shootHibernationUpdate,
 		DeleteFunc: shootController.shootHibernationDelete,
 	})
 
-	configMapInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	configMapInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    shootController.configMapAdd,
 		UpdateFunc: shootController.configMapUpdate,
 	})
 
-	gardenClient, err := clientMap.GetClient(context.TODO(), keys.ForGarden())
-	if err != nil {
-		return nil, err
-	}
-
-	runtimeShootInformer, err := gardenClient.Cache().GetInformer(context.TODO(), &gardencorev1beta1.Shoot{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get Shoot Informer: %w", err)
-	}
-	runtimeShootInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	shootInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    shootController.shootReferenceAdd,
 		UpdateFunc: shootController.shootReferenceUpdate,
 	})
 
+	shootInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    shootController.shootRetryAdd,
+		UpdateFunc: shootController.shootRetryUpdate,
+	})
+
 	shootController.hasSyncedFuncs = []cache.InformerSynced{
-		shootInformer.Informer().HasSynced,
-		runtimeShootInformer.HasSynced,
-		gardenCoreV1beta1Informer.Quotas().Informer().HasSynced,
-		configMapInformer.Informer().HasSynced,
+		shootInformer.HasSynced,
+		configMapInformer.HasSynced,
 	}
 
 	runtimeSecretLister := func(ctx context.Context, secretList *corev1.SecretList, opts ...client.ListOption) error {
@@ -162,19 +160,13 @@ func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers ga
 	// If cache is not enabled, set up a dedicated informer which only considers objects which are not gardener managed.
 	// Large gardener environments hold many secrets and with a proper cache we can compensate the load the controller puts on the API server.
 	if !controllermanagerfeatures.FeatureGate.Enabled(features.CachedRuntimeClients) {
-		factory := kubeinformers.NewSharedInformerFactoryWithOptions(gardenClient.Kubernetes(), 0,
-			kubeinformers.WithTweakListOptions(func(opts *metav1.ListOptions) {
-				opts.LabelSelector = UserManagedSelector.String()
-			}))
-		secretInformer := factory.Core().V1().Secrets()
-
 		runtimeSecretLister = func(ctx context.Context, secretList *corev1.SecretList, opts ...client.ListOption) error {
 			listOpts := &client.ListOptions{}
 			for _, opt := range opts {
 				opt.ApplyToList(listOpts)
 			}
 
-			secrets, err := secretInformer.Lister().Secrets(listOpts.Namespace).List(listOpts.LabelSelector)
+			secrets, err := secretLister.Secrets(listOpts.Namespace).List(listOpts.LabelSelector)
 			if err != nil {
 				return err
 			}
@@ -184,9 +176,7 @@ func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers ga
 
 			return nil
 		}
-
 		shootController.hasSyncedFuncs = append(shootController.hasSyncedFuncs, secretInformer.Informer().HasSynced)
-		shootController.startFuncs = append(shootController.startFuncs, factory.Start)
 	}
 
 	shootController.shootRefReconciler = NewShootReferenceReconciler(logger.Logger, clientMap, runtimeSecretLister, runtimeConfigMapLister, config.Controllers.ShootReference)
@@ -195,11 +185,7 @@ func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers ga
 }
 
 // Run runs the Controller until the given stop channel can be read from.
-func (c *Controller) Run(ctx context.Context, shootMaintenanceWorkers, shootQuotaWorkers, shootHibernationWorkers, shootReferenceWorkers int) {
-	for _, start := range c.startFuncs {
-		start(ctx.Done())
-	}
-
+func (c *Controller) Run(ctx context.Context, shootMaintenanceWorkers, shootQuotaWorkers, shootHibernationWorkers, shootReferenceWorkers, shootRetryWorkers int) {
 	var waitGroup sync.WaitGroup
 	if !cache.WaitForCacheSync(ctx.Done(), c.hasSyncedFuncs...) {
 		logger.Logger.Error("Timed out waiting for caches to sync")
@@ -217,20 +203,22 @@ func (c *Controller) Run(ctx context.Context, shootMaintenanceWorkers, shootQuot
 	logger.Logger.Info("Shoot controller initialized.")
 
 	for i := 0; i < shootMaintenanceWorkers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.shootMaintenanceQueue, "Shoot Maintenance", c.reconcileShootMaintenanceKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.shootMaintenanceQueue, "Shoot Maintenance", c.shootMaintenanceReconciler, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootQuotaWorkers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.shootQuotaQueue, "Shoot Quota", c.reconcileShootQuotaKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.shootQuotaQueue, "Shoot Quota", c.shootQuotaReconciler, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootHibernationWorkers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.shootHibernationQueue, "Scheduled Shoot Hibernation", c.reconcileShootHibernationKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.shootHibernationQueue, "Shoot Hibernation", c.shootHibernationReconciler, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootMaintenanceWorkers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.configMapQueue, "ConfigMap", c.reconcileConfigMapKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.configMapQueue, "ConfigMap", c.configMapReconciler, &waitGroup, c.workerCh)
 	}
-
 	for i := 0; i < shootReferenceWorkers; i++ {
 		controllerutils.CreateWorker(ctx, c.shootReferenceQueue, "ShootReference", c.shootRefReconciler, &waitGroup, c.workerCh)
+	}
+	for i := 0; i < shootRetryWorkers; i++ {
+		controllerutils.CreateWorker(ctx, c.shootRetryQueue, "Shoot Retry", c.shootRetryReconciler, &waitGroup, c.workerCh)
 	}
 
 	// Shutdown handling
@@ -240,6 +228,7 @@ func (c *Controller) Run(ctx context.Context, shootMaintenanceWorkers, shootQuot
 	c.shootHibernationQueue.ShutDown()
 	c.configMapQueue.ShutDown()
 	c.shootReferenceQueue.ShutDown()
+	c.shootRetryQueue.ShutDown()
 
 	for {
 		var (
@@ -248,7 +237,8 @@ func (c *Controller) Run(ctx context.Context, shootMaintenanceWorkers, shootQuot
 			shootHibernationQueueLength = c.shootHibernationQueue.Len()
 			configMapQueueLength        = c.configMapQueue.Len()
 			referenceQueueLength        = c.shootReferenceQueue.Len()
-			queueLengths                = shootMaintenanceQueueLength + shootQuotaQueueLength + shootHibernationQueueLength + configMapQueueLength + referenceQueueLength
+			shootRetryQueueLength       = c.shootReferenceQueue.Len()
+			queueLengths                = shootMaintenanceQueueLength + shootQuotaQueueLength + shootHibernationQueueLength + configMapQueueLength + referenceQueueLength + shootRetryQueueLength
 		)
 		if queueLengths == 0 && c.numberOfRunningWorkers == 0 {
 			logger.Logger.Debug("No running Shoot worker and no items left in the queues. Terminated Shoot controller...")

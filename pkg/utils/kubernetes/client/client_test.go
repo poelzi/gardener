@@ -21,10 +21,11 @@ import (
 
 	mockcorev1 "github.com/gardener/gardener/pkg/mock/client-go/core/v1"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockutilclient "github.com/gardener/gardener/pkg/mock/gardener/utils/kubernetes/client"
-	mocktime "github.com/gardener/gardener/pkg/mock/gardener/utils/time"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	. "github.com/gardener/gardener/pkg/utils/kubernetes/client"
+	mockutilclient "github.com/gardener/gardener/pkg/utils/kubernetes/client/mock"
+	"github.com/gardener/gardener/pkg/utils/test"
+	mocktime "github.com/gardener/gardener/pkg/utils/time/mock"
 
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
@@ -33,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -54,12 +56,11 @@ var _ = Describe("Cleaner", func() {
 		cm2    corev1.ConfigMap
 		cmList corev1.ConfigMapList
 		ns     corev1.Namespace
-		//cmObjects []runtime.Object
 
 		cm2WithFinalizer corev1.ConfigMap
 		nsWithFinalizer  corev1.Namespace
-		//cmListWithFinalizer corev1.ConfigMapList
 	)
+
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
 		c = mockclient.NewMockClient(ctrl)
@@ -133,7 +134,7 @@ var _ = Describe("Cleaner", func() {
 				gomock.InOrder(
 					c.EXPECT().Get(ctx, cm2Key, &cm2).SetArg(2, cm2WithFinalizer),
 					timeOps.EXPECT().Now().Return(now),
-					c.EXPECT().Patch(ctx, &cm2, client.MergeFrom(&cm2WithFinalizer)),
+					test.EXPECTPatch(ctx, c, &cm2, &cm2WithFinalizer, types.MergePatchType),
 				)
 
 				Expect(cleaner.Clean(ctx, c, &cm2, FinalizeGracePeriodSeconds(20))).To(Succeed())
@@ -214,7 +215,7 @@ var _ = Describe("Cleaner", func() {
 				gomock.InOrder(
 					c.EXPECT().List(ctx, list).SetArg(1, corev1.ConfigMapList{Items: []corev1.ConfigMap{cm2WithFinalizer}}),
 					timeOps.EXPECT().Now().Return(now),
-					c.EXPECT().Patch(ctx, &cm2, client.MergeFrom(&cm2WithFinalizer)),
+					test.EXPECTPatch(ctx, c, &cm2, &cm2WithFinalizer, types.MergePatchType),
 				)
 
 				Expect(cleaner.Clean(ctx, c, list, FinalizeGracePeriodSeconds(20))).To(Succeed())

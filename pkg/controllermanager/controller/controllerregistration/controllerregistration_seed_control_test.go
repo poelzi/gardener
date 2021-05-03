@@ -20,7 +20,7 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
-	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
+	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/logger"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
 	"github.com/gardener/gardener/pkg/operation/common"
@@ -32,100 +32,12 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/pointer"
 )
 
-var _ = Describe("Controller", func() {
-	logger.Logger = logger.NewNopLogger()
-
-	var (
-		gardenCoreInformerFactory gardencoreinformers.SharedInformerFactory
-
-		queue                           *fakeQueue
-		controllerRegistrationSeedQueue *fakeQueue
-		c                               *Controller
-
-		seedName = "seed"
-	)
-
-	BeforeEach(func() {
-		gardenCoreInformerFactory = gardencoreinformers.NewSharedInformerFactory(nil, 0)
-		controllerRegistrationInformer := gardenCoreInformerFactory.Core().V1beta1().ControllerRegistrations()
-		controllerRegistrationLister := controllerRegistrationInformer.Lister()
-		seedInformer := gardenCoreInformerFactory.Core().V1beta1().Seeds()
-		seedLister := seedInformer.Lister()
-
-		queue = &fakeQueue{}
-		controllerRegistrationSeedQueue = &fakeQueue{}
-
-		c = &Controller{
-			controllerRegistrationQueue:     queue,
-			controllerRegistrationLister:    controllerRegistrationLister,
-			controllerRegistrationSeedQueue: controllerRegistrationSeedQueue,
-			seedLister:                      seedLister,
-		}
-	})
-
-	Describe("#reconcileControllerRegistrationSeedKey", func() {
-		It("should return an error because the key cannot be split", func() {
-			Expect(c.reconcileControllerRegistrationSeedKey("a/b/c")).To(HaveOccurred())
-		})
-
-		It("should return nil because object not found", func() {
-			c.seedLister = newFakeSeedLister(c.seedLister, nil, nil, apierrors.NewNotFound(schema.GroupResource{}, seedName))
-
-			Expect(c.reconcileControllerRegistrationSeedKey(seedName)).NotTo(HaveOccurred())
-		})
-
-		It("should return err because object not found", func() {
-			err := errors.New("error")
-
-			c.seedLister = newFakeSeedLister(c.seedLister, nil, nil, err)
-
-			Expect(c.reconcileControllerRegistrationSeedKey(seedName)).To(Equal(err))
-		})
-
-		It("should return the result of the reconciliation (nil)", func() {
-			obj := &gardencorev1beta1.Seed{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: seedName,
-				},
-			}
-
-			c.controllerRegistrationSeedControl = &fakeControllerRegistrationSeedControl{}
-			c.seedLister = newFakeSeedLister(c.seedLister, obj, nil, nil)
-
-			Expect(c.reconcileControllerRegistrationSeedKey(seedName)).NotTo(HaveOccurred())
-		})
-
-		It("should return the result of the reconciliation (error)", func() {
-			obj := &gardencorev1beta1.Seed{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: seedName,
-				},
-			}
-
-			c.controllerRegistrationSeedControl = &fakeControllerRegistrationSeedControl{result: errors.New("")}
-			c.seedLister = newFakeSeedLister(c.seedLister, obj, nil, nil)
-
-			Expect(c.reconcileControllerRegistrationSeedKey(seedName)).To(HaveOccurred())
-		})
-	})
-})
-
-type fakeControllerRegistrationSeedControl struct {
-	result error
-}
-
-func (f *fakeControllerRegistrationSeedControl) Reconcile(obj *gardencorev1beta1.Seed) error {
-	return f.result
-}
-
-var _ = Describe("ControllerRegistrationSeedControl", func() {
+var _ = Describe("controllerRegistrationReconciler", func() {
 	var (
 		ctx       = context.TODO()
 		nopLogger = logger.NewFieldLogger(logger.NewNopLogger(), "", "")
@@ -187,15 +99,17 @@ var _ = Describe("ControllerRegistrationSeedControl", func() {
 				},
 			},
 		}
-		backupBucketList = []*gardencorev1beta1.BackupBucket{
-			backupBucket1,
-			backupBucket2,
-			backupBucket3,
+		backupBucketList = &gardencorev1beta1.BackupBucketList{
+			Items: []gardencorev1beta1.BackupBucket{
+				*backupBucket1,
+				*backupBucket2,
+				*backupBucket3,
+			},
 		}
-		buckets = map[string]*gardencorev1beta1.BackupBucket{
-			backupBucket1.Name: backupBucket1,
-			backupBucket2.Name: backupBucket2,
-			backupBucket3.Name: backupBucket3,
+		buckets = map[string]gardencorev1beta1.BackupBucket{
+			backupBucket1.Name: *backupBucket1,
+			backupBucket2.Name: *backupBucket2,
+			backupBucket3.Name: *backupBucket3,
 		}
 
 		backupEntry1 = &gardencorev1beta1.BackupEntry{
@@ -460,15 +374,17 @@ var _ = Describe("ControllerRegistrationSeedControl", func() {
 				},
 			},
 		}
-		controllerRegistrationList = []*gardencorev1beta1.ControllerRegistration{
-			controllerRegistration1,
-			controllerRegistration2,
-			controllerRegistration3,
-			controllerRegistration4,
-			controllerRegistration5,
-			controllerRegistration6,
-			controllerRegistration7,
-			controllerRegistration8,
+		controllerRegistrationList = &gardencorev1beta1.ControllerRegistrationList{
+			Items: []gardencorev1beta1.ControllerRegistration{
+				*controllerRegistration1,
+				*controllerRegistration2,
+				*controllerRegistration3,
+				*controllerRegistration4,
+				*controllerRegistration5,
+				*controllerRegistration6,
+				*controllerRegistration7,
+				*controllerRegistration8,
+			},
 		}
 		controllerRegistrations = map[string]controllerRegistration{
 			controllerRegistration1.Name: {obj: controllerRegistration1},
@@ -567,7 +483,7 @@ var _ = Describe("ControllerRegistrationSeedControl", func() {
 
 	Describe("#computeKindTypesForBackupBuckets", func() {
 		It("should return empty results for empty input", func() {
-			kindTypes, bs := computeKindTypesForBackupBuckets(nil, seedName)
+			kindTypes, bs := computeKindTypesForBackupBuckets(&gardencorev1beta1.BackupBucketList{}, seedName)
 
 			Expect(kindTypes.Len()).To(BeZero())
 			Expect(bs).To(BeEmpty())
@@ -729,12 +645,32 @@ var _ = Describe("ControllerRegistrationSeedControl", func() {
 				},
 			}
 
-			expected := sets.NewString(common.ExtensionID(dnsv1alpha1.DNSProviderKind, providerType))
+			expected := sets.NewString(extensions.Id(dnsv1alpha1.DNSProviderKind, providerType))
 			actual := computeKindTypesForSeed(seed)
 			Expect(actual).To(Equal(expected))
 		})
 
-		It("should not add an extension", func() {
+		It("should not add an extension if Seed has a deletion timestamp", func() {
+			deletionTimestamp := metav1.Now()
+			seed := &gardencorev1beta1.Seed{
+				ObjectMeta: metav1.ObjectMeta{
+					DeletionTimestamp: &deletionTimestamp,
+				},
+				Spec: gardencorev1beta1.SeedSpec{
+					DNS: gardencorev1beta1.SeedDNS{
+						Provider: &gardencorev1beta1.SeedDNSProvider{
+							Type: providerType,
+						},
+					},
+				},
+			}
+
+			expected := sets.NewString()
+			actual := computeKindTypesForSeed(seed)
+			Expect(actual).To(Equal(expected))
+		})
+
+		It("should not add an extension if no provider configured", func() {
 			seed := &gardencorev1beta1.Seed{
 				Spec: gardencorev1beta1.SeedSpec{},
 			}
@@ -794,17 +730,6 @@ var _ = Describe("ControllerRegistrationSeedControl", func() {
 
 			Expect(names).To(Equal(sets.NewString(controllerRegistration7.Name)))
 			Expect(err).NotTo(HaveOccurred())
-		})
-
-		It("should fail to compute the result and return error", func() {
-			wantedKindTypeCombinations := sets.NewString(
-				extensionsv1alpha1.ExtensionResource + "/foo",
-			)
-
-			names, err := computeWantedControllerRegistrationNames(wantedKindTypeCombinations, controllerInstallationList, controllerRegistrations, len(shootList), seedObjectMeta)
-
-			Expect(names).To(BeNil())
-			Expect(err).To(HaveOccurred())
 		})
 	})
 

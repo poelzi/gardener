@@ -20,6 +20,7 @@ import (
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
 	"github.com/gardener/gardener/pkg/gardenlet/apis/config"
@@ -37,7 +38,7 @@ import (
 // Builder is an object that builds Operation objects.
 type Builder struct {
 	configFunc                func() (*config.GardenletConfiguration, error)
-	gardenFunc                func(map[string]*corev1.Secret) (*garden.Garden, error)
+	gardenFunc                func(context.Context, map[string]*corev1.Secret) (*garden.Garden, error)
 	gardenerInfoFunc          func() (*gardencorev1beta1.Gardener, error)
 	gardenClusterIdentityFunc func() (string, error)
 	imageVectorFunc           func() (imagevector.ImageVector, error)
@@ -61,7 +62,8 @@ type Operation struct {
 	Seed                      *seed.Seed
 	Shoot                     *shoot.Shoot
 	ShootState                *gardencorev1alpha1.ShootState
-	ShootedSeed               *gardencorev1beta1helper.ShootedSeed
+	ManagedSeed               *seedmanagementv1alpha1.ManagedSeed
+	ManagedSeedAPIServer      *gardencorev1beta1helper.ShootedSeedAPIServer
 	ClientMap                 clientmap.ClientMap
 	K8sGardenClient           kubernetes.Interface
 	K8sSeedClient             kubernetes.Interface

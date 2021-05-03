@@ -16,12 +16,13 @@ package quota
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
-	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
-	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
+	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllermanager"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/logger"
@@ -30,22 +31,15 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // Controller controls Quotas.
 type Controller struct {
-	clientMap          clientmap.ClientMap
-	k8sGardenInformers gardencoreinformers.SharedInformerFactory
+	reconciler     reconcile.Reconciler
+	hasSyncedFuncs []cache.InformerSynced
 
-	control  ControlInterface
-	recorder record.EventRecorder
-
-	quotaLister gardencorelisters.QuotaLister
-	quotaQueue  workqueue.RateLimitingInterface
-	quotaSynced cache.InformerSynced
-
-	secretBindingLister gardencorelisters.SecretBindingLister
-
+	quotaQueue             workqueue.RateLimitingInterface
 	workerCh               chan int
 	numberOfRunningWorkers int
 }
@@ -53,41 +47,46 @@ type Controller struct {
 // NewQuotaController takes a Kubernetes client for the Garden clusters <k8sGardenClient>, a struct
 // holding information about the acting Gardener, a <quotaInformer>, and a <recorder> for
 // event recording. It creates a new Gardener controller.
-func NewQuotaController(clientMap clientmap.ClientMap, gardenCoreInformerFactory gardencoreinformers.SharedInformerFactory, recorder record.EventRecorder) *Controller {
-	var (
-		gardenCoreV1beta1Informer = gardenCoreInformerFactory.Core().V1beta1()
-
-		quotaInformer       = gardenCoreV1beta1Informer.Quotas()
-		quotaLister         = quotaInformer.Lister()
-		secretBindingLister = gardenCoreV1beta1Informer.SecretBindings().Lister()
-	)
-
-	quotaController := &Controller{
-		clientMap:           clientMap,
-		k8sGardenInformers:  gardenCoreInformerFactory,
-		control:             NewDefaultControl(clientMap, gardenCoreInformerFactory, recorder, secretBindingLister),
-		recorder:            recorder,
-		quotaLister:         quotaLister,
-		quotaQueue:          workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Quota"),
-		secretBindingLister: secretBindingLister,
-		workerCh:            make(chan int),
+func NewQuotaController(
+	ctx context.Context,
+	clientMap clientmap.ClientMap,
+	recorder record.EventRecorder,
+) (
+	*Controller,
+	error,
+) {
+	gardenClient, err := clientMap.GetClient(ctx, keys.ForGarden())
+	if err != nil {
+		return nil, err
 	}
 
-	quotaInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	quotaInformer, err := gardenClient.Cache().GetInformer(ctx, &gardencorev1beta1.Quota{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Quota Informer: %w", err)
+	}
+
+	quotaController := &Controller{
+		reconciler: NewQuotaReconciler(logger.Logger, gardenClient.Client(), recorder),
+		quotaQueue: workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "Quota"),
+		workerCh:   make(chan int),
+	}
+
+	quotaInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    quotaController.quotaAdd,
 		UpdateFunc: quotaController.quotaUpdate,
 		DeleteFunc: quotaController.quotaDelete,
 	})
-	quotaController.quotaSynced = quotaInformer.Informer().HasSynced
 
-	return quotaController
+	quotaController.hasSyncedFuncs = append(quotaController.hasSyncedFuncs, quotaInformer.HasSynced)
+
+	return quotaController, nil
 }
 
 // Run runs the Controller until the given stop channel can be read from.
 func (c *Controller) Run(ctx context.Context, workers int) {
 	var waitGroup sync.WaitGroup
 
-	if !cache.WaitForCacheSync(ctx.Done(), c.quotaSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.hasSyncedFuncs...) {
 		logger.Logger.Error("Timed out waiting for caches to sync")
 		return
 	}
@@ -103,7 +102,7 @@ func (c *Controller) Run(ctx context.Context, workers int) {
 	logger.Logger.Info("Quota controller initialized.")
 
 	for i := 0; i < workers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.quotaQueue, "Quota", c.reconcileQuotaKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.quotaQueue, "Quota", c.reconciler, &waitGroup, c.workerCh)
 	}
 
 	// Shutdown handling

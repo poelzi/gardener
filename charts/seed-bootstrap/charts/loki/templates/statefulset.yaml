@@ -23,6 +23,7 @@ spec:
       serviceAccountName: loki
       securityContext:
         {{- toYaml .Values.securityContext | nindent 8 }}
+      priorityClassName: {{ .Values.priorityClass.name }}
       containers:
         - name: loki
           image: {{ index .Values.global.images "loki" }}
@@ -45,7 +46,7 @@ spec:
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml .Values.resources.loki | nindent 12 }}
           securityContext:
             readOnlyRootFilesystem: true
           env:
@@ -56,6 +57,21 @@ spec:
             - name: JAEGER_AGENT_HOST
               value: "{{ .Values.tracing.jaegerAgentHost }}"
             {{- end }}
+        - name: curator
+          image: {{ index .Values.global.images "loki-curator" }}
+          args:
+            - "-config=/etc/loki/curator.yaml"
+          ports:
+          - name: metrics
+            containerPort: {{ .Values.curator.port }}
+            protocol: TCP
+          resources:
+            {{- toYaml .Values.resources.curator | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: loki
+              mountPath: "/data"
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       volumes:
         - name: config

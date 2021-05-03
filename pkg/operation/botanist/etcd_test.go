@@ -19,16 +19,17 @@ import (
 	"fmt"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	seedmanagementv1alpha1 "github.com/gardener/gardener/pkg/apis/seedmanagement/v1alpha1"
+	"github.com/gardener/gardener/pkg/client/kubernetes"
+	fakeclientset "github.com/gardener/gardener/pkg/client/kubernetes/fake"
 	"github.com/gardener/gardener/pkg/features"
 	gardenletfeatures "github.com/gardener/gardener/pkg/gardenlet/features"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockkubernetes "github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
-	mocketcd "github.com/gardener/gardener/pkg/mock/gardener/operation/botanist/controlplane/etcd"
 	"github.com/gardener/gardener/pkg/operation"
 	. "github.com/gardener/gardener/pkg/operation/botanist"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
-	"github.com/gardener/gardener/pkg/operation/botanist/controlplane/etcd"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/etcd"
+	mocketcd "github.com/gardener/gardener/pkg/operation/botanist/component/etcd/mock"
 	seedpkg "github.com/gardener/gardener/pkg/operation/seed"
 	shootpkg "github.com/gardener/gardener/pkg/operation/shoot"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -42,7 +43,6 @@ import (
 	gomegatypes "github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -51,8 +51,9 @@ import (
 var _ = Describe("Etcd", func() {
 	var (
 		ctrl             *gomock.Controller
-		kubernetesClient *mockkubernetes.MockInterface
+		kubernetesClient kubernetes.Interface
 		c                *mockclient.MockClient
+		reader           *mockclient.MockReader
 		botanist         *Botanist
 
 		ctx                   = context.TODO()
@@ -68,8 +69,12 @@ var _ = Describe("Etcd", func() {
 
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
-		kubernetesClient = mockkubernetes.NewMockInterface(ctrl)
 		c = mockclient.NewMockClient(ctrl)
+		reader = mockclient.NewMockReader(ctrl)
+		kubernetesClient = fakeclientset.NewClientSetBuilder().
+			WithClient(c).
+			WithAPIReader(reader).
+			Build()
 		botanist = &Botanist{Operation: &operation.Operation{}}
 	})
 
@@ -99,15 +104,14 @@ var _ = Describe("Etcd", func() {
 
 		Context("no shooted seed", func() {
 			BeforeEach(func() {
-				botanist.ShootedSeed = nil
+				botanist.ManagedSeed = nil
 			})
 
 			It("should successfully create an etcd interface (normal class)", func() {
 				defer test.WithFeatureGate(gardenletfeatures.FeatureGate, features.HVPA, hvpaEnabled)()
-				kubernetesClient.EXPECT().Client()
 
 				validator := &newEtcdValidator{
-					expectedClient:                  BeNil(),
+					expectedClient:                  Equal(c),
 					expectedNamespace:               Equal(namespace),
 					expectedRole:                    Equal(role),
 					expectedClass:                   Equal(class),
@@ -133,10 +137,9 @@ var _ = Describe("Etcd", func() {
 				class := etcd.ClassImportant
 
 				defer test.WithFeatureGate(gardenletfeatures.FeatureGate, features.HVPA, hvpaEnabled)()
-				kubernetesClient.EXPECT().Client()
 
 				validator := &newEtcdValidator{
-					expectedClient:                  BeNil(),
+					expectedClient:                  Equal(c),
 					expectedNamespace:               Equal(namespace),
 					expectedRole:                    Equal(role),
 					expectedClass:                   Equal(class),
@@ -163,15 +166,14 @@ var _ = Describe("Etcd", func() {
 			hvpaForShootedSeedEnabled := false
 
 			BeforeEach(func() {
-				botanist.ShootedSeed = &gardencorev1beta1helper.ShootedSeed{}
+				botanist.ManagedSeed = &seedmanagementv1alpha1.ManagedSeed{}
 			})
 
 			It("should successfully create an etcd interface (normal class)", func() {
 				defer test.WithFeatureGate(gardenletfeatures.FeatureGate, features.HVPAForShootedSeed, hvpaForShootedSeedEnabled)()
-				kubernetesClient.EXPECT().Client()
 
 				validator := &newEtcdValidator{
-					expectedClient:                  BeNil(),
+					expectedClient:                  Equal(c),
 					expectedNamespace:               Equal(namespace),
 					expectedRole:                    Equal(role),
 					expectedClass:                   Equal(class),
@@ -197,10 +199,9 @@ var _ = Describe("Etcd", func() {
 				class := etcd.ClassImportant
 
 				defer test.WithFeatureGate(gardenletfeatures.FeatureGate, features.HVPAForShootedSeed, hvpaForShootedSeedEnabled)()
-				kubernetesClient.EXPECT().Client()
 
 				validator := &newEtcdValidator{
-					expectedClient:                  BeNil(),
+					expectedClient:                  Equal(c),
 					expectedNamespace:               Equal(namespace),
 					expectedRole:                    Equal(role),
 					expectedClass:                   Equal(class),
@@ -344,8 +345,7 @@ var _ = Describe("Etcd", func() {
 			})
 
 			It("should set the secrets and deploy", func() {
-				kubernetesClient.EXPECT().Client().Return(c)
-				c.EXPECT().Get(ctx, kutil.Key(namespace, "etcd-backup"), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				c.EXPECT().Get(ctx, kutil.Key(namespace, "etcd-backup"), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					backupSecret.DeepCopyInto(obj.(*corev1.Secret))
 					return nil
 				})
@@ -363,15 +363,13 @@ var _ = Describe("Etcd", func() {
 			})
 
 			It("should fail when reading the backup secret fails", func() {
-				kubernetesClient.EXPECT().Client().Return(c)
 				c.EXPECT().Get(ctx, kutil.Key(namespace, "etcd-backup"), gomock.AssignableToTypeOf(&corev1.Secret{})).Return(fakeErr)
 
 				Expect(botanist.DeployEtcd(ctx)).To(MatchError(fakeErr))
 			})
 
 			It("should fail when the backup schedule cannot be determined", func() {
-				kubernetesClient.EXPECT().Client().Return(c)
-				c.EXPECT().Get(ctx, kutil.Key(namespace, "etcd-backup"), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				c.EXPECT().Get(ctx, kutil.Key(namespace, "etcd-backup"), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					backupSecret.DeepCopyInto(obj.(*corev1.Secret))
 					return nil
 				})
@@ -410,7 +408,6 @@ var _ = Describe("Etcd", func() {
 			var patch = client.RawPatch(types.MergePatchType, []byte(`{"spec":{"replicas":0}}`))
 
 			It("should scale both etcds to 0", func() {
-				kubernetesClient.EXPECT().DirectClient().Return(c).Times(2)
 				c.EXPECT().Patch(ctx, etcdEvents, patch)
 				c.EXPECT().Patch(ctx, etcdMain, patch)
 
@@ -418,14 +415,12 @@ var _ = Describe("Etcd", func() {
 			})
 
 			It("should return the error when scaling etcd-events fails", func() {
-				kubernetesClient.EXPECT().DirectClient().Return(c)
 				c.EXPECT().Patch(ctx, etcdEvents, patch).Return(fakeErr)
 
 				Expect(botanist.ScaleETCDToZero(ctx)).To(MatchError(fakeErr))
 			})
 
 			It("should return the error when scaling etcd-main fails", func() {
-				kubernetesClient.EXPECT().DirectClient().Return(c).Times(2)
 				c.EXPECT().Patch(ctx, etcdEvents, patch)
 				c.EXPECT().Patch(ctx, etcdMain, patch).Return(fakeErr)
 
@@ -437,7 +432,6 @@ var _ = Describe("Etcd", func() {
 			var patch = client.RawPatch(types.MergePatchType, []byte(`{"spec":{"replicas":1}}`))
 
 			It("should scale both etcds to 1", func() {
-				kubernetesClient.EXPECT().DirectClient().Return(c).Times(2)
 				c.EXPECT().Patch(ctx, etcdEvents, patch)
 				c.EXPECT().Patch(ctx, etcdMain, patch)
 
@@ -445,14 +439,12 @@ var _ = Describe("Etcd", func() {
 			})
 
 			It("should return the error when scaling etcd-events fails", func() {
-				kubernetesClient.EXPECT().DirectClient().Return(c)
 				c.EXPECT().Patch(ctx, etcdEvents, patch).Return(fakeErr)
 
 				Expect(botanist.ScaleETCDToOne(ctx)).To(MatchError(fakeErr))
 			})
 
 			It("should return the error when scaling etcd-main fails", func() {
-				kubernetesClient.EXPECT().DirectClient().Return(c).Times(2)
 				c.EXPECT().Patch(ctx, etcdEvents, patch)
 				c.EXPECT().Patch(ctx, etcdMain, patch).Return(fakeErr)
 

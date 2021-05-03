@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/gardener/gardener/pkg/controllerutils"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
@@ -110,11 +111,16 @@ func (t *terraformer) initializerConfig(ctx context.Context) *InitializerConfig 
 // Initializer to correctly create all the resources as specified in the given InitializerConfig.
 // A default implementation can be found in DefaultInitializer.
 func (t *terraformer) InitializeWith(ctx context.Context, initializer Initializer) Terraformer {
-	if err := initializer.Initialize(ctx, t.initializerConfig(ctx), t.ownerRef); err != nil {
+	config := t.initializerConfig(ctx)
+
+	if err := initializer.Initialize(ctx, config, t.ownerRef); err != nil {
 		t.logger.Error(err, "Could not create Terraformer ConfigMaps/Secrets")
 		return t
 	}
-	t.configurationDefined = true
+
+	t.configurationInitialized = true
+	t.stateInitialized = config.InitializeState
+
 	return t
 }
 
@@ -244,21 +250,43 @@ func (t *terraformer) ConfigExists(ctx context.Context) (bool, error) {
 func (t *terraformer) CleanupConfiguration(ctx context.Context) error {
 	t.logger.Info("Cleaning up all terraformer configuration")
 
+	t.logger.V(1).Info("Deleting Terraform state ConfigMap", "name", t.stateName)
+	if err := t.client.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.stateName}}); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+
 	t.logger.V(1).Info("Deleting Terraform variables Secret", "name", t.variablesName)
-	if err := t.client.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.variablesName}}); err != nil && !apierrors.IsNotFound(err) {
+	if err := t.client.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.variablesName}}); client.IgnoreNotFound(err) != nil {
 		return err
 	}
 
 	t.logger.V(1).Info("Deleting Terraform configuration ConfigMap", "name", t.configName)
-	if err := t.client.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.configName}}); err != nil && !apierrors.IsNotFound(err) {
+	if err := t.client.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.configName}}); client.IgnoreNotFound(err) != nil {
 		return err
 	}
 
-	t.logger.V(1).Info("Deleting Terraform state ConfigMap", "name", t.stateName)
-	if err := t.client.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.stateName}}); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
+	return nil
+}
 
+// RemoveTerraformerFinalizerFromConfig deletes the terraformer finalizer from the two ConfigMaps and the Secret which store the Terraform configuration and state.
+func (t *terraformer) RemoveTerraformerFinalizerFromConfig(ctx context.Context) error {
+	t.logger.Info("Cleaning up all terraformer configuration finalizers")
+
+	for _, obj := range []client.Object{
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.variablesName}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.stateName}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: t.namespace, Name: t.configName}},
+	} {
+		if err := t.client.Get(ctx, kutil.Key(t.namespace, obj.GetName()), obj); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+
+		if controllerutil.ContainsFinalizer(obj, TerraformerFinalizer) {
+			if err := controllerutils.PatchRemoveFinalizers(ctx, t.client, obj, TerraformerFinalizer); client.IgnoreNotFound(err) != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

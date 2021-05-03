@@ -20,8 +20,8 @@ import (
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	mockkubernetes "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockkubernetes "github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
 	"github.com/gardener/gardener/pkg/operation"
 	. "github.com/gardener/gardener/pkg/operation/botanist"
 	"github.com/gardener/gardener/pkg/operation/seed"
@@ -108,8 +108,7 @@ var _ = Describe("Namespaces", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: namespace,
 					Annotations: map[string]string{
-						"shoot.gardener.cloud/uid":     string(uid),
-						"shoot.garden.sapcloud.io/uid": string(uid),
+						"shoot.gardener.cloud/uid": string(uid),
 					},
 					Labels: map[string]string{
 						"gardener.cloud/role":                      "shoot",

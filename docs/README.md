@@ -2,7 +2,7 @@
 
 ## Overview
 
-* [General Architecture](https://github.com/gardener/documentation/wiki/Architecture)
+* [General Architecture](concepts/architecture.md)
 * [Gardener landing page `gardener.cloud`](https://gardener.cloud/)
 * ["Gardener, the Kubernetes Botanist" blog on kubernetes.io](https://kubernetes.io/blog/2018/05/17/gardener/)
 * ["Gardener Project Update" blog on kubernetes.io](https://kubernetes.io/blog/2019/12/02/gardener-project-update/)
@@ -23,7 +23,7 @@
 
 ## Usage
 
-* [Add a Shooted Seed](usage/shooted_seed.md)
+* [Register Shoot as Seed](usage/managed_seed.md)
 * [API Server Network Proxy Reverse Tunneling](usage/reverse-tunnel.md)
 * [Audit a Kubernetes cluster](usage/shoot_auditpolicy.md)
 * [Auto-Scaling for shoot clusters](usage/shoot_autoscaling.md)
@@ -48,6 +48,7 @@
 * [Troubleshooting guide](usage/trouble_shooting_guide.md)
 * [Trusted TLS certificate for shoot control planes](usage/trusted-tls-for-control-planes.md)
 * [APIServerSNI environment variable injection](usage/apiserver-sni-injection.md)
+* [Reversed Cluster VPN](usage/reversed-vpn-tunnel.md)
 
 ## Proposals
 
@@ -66,13 +67,16 @@
 * [GEP-11: Utilize API Server Network Proxy to Invert Seed-to-Shoot Connectivity](proposals/11-apiserver-network-proxy.md)
 * [GEP-12: OIDC Webhook Authenticator](proposals/12-oidc-webhook-authenticator.md)
 * [GEP-13: Automated Seed Management](proposals/13-automated-seed-management.md)
+* [GEP-14: Reversed Cluster VPN](proposals/14-reversed-cluster-vpn.md)
+* [GEP-15: Manage Bastions and SSH Key Pair Rotation](proposals/15-manage-bastions-and-ssh-key-pair-rotation.md)
+* [GEP-16: Dynamic kubeconfig generation for Shoot clusters](proposals/16-adminkubeconfig-subresource.md)
 
 ## Development
 
 * [Setting up a local development environment](development/local_setup.md)
 * [Unit Testing and Dependency Management](development/testing_and_dependencies.md)
 * [Changing the API](development/changing-the-api.md)
-* [Features, Releases and Hotfixes](development/process.md)
+* [Features, Hotfixes, and Releases](development/process.md)
 * [Adding New Cloud Providers](development/new-cloud-provider.md)
 * [Extending the Monitoring Stack](development/monitoring-stack.md)
 * [How to create log parser for container into fluent-bit](development/log_parsers.md)
@@ -98,6 +102,7 @@
     * [`DNSProvider` and `DNSEntry` resources](extensions/dns.md)
   * IaaS/Cloud providers
     * [Control plane customization webhooks](extensions/controlplane-webhooks.md)
+    * [`Bastion` resource](extensions/bastion.md)
     * [`ControlPlane` resource](extensions/controlplane.md)
     * [`ControlPlane` exposure resource](extensions/controlplane-exposure.md)
     * [`Infrastructure` resource](extensions/infrastructure.md)
@@ -124,6 +129,7 @@
 * [Deploying Gardenlets](deployment/deploy_gardenlet.md)
     * [Automatic Deployment of Gardenlets](deployment/deploy_gardenlet_automatically.md)
     * [Deploy a Gardenlet Manually](deployment/deploy_gardenlet_manually.md)
+    * [Scoped API Access for Gardenlets](deployment/gardenlet_api_access.md)
 * [Deploying the Gardener and a Seed into an AKS cluster](deployment/aks.md)
 * [Overwrite image vector](deployment/image_vector.md)
 * [Migration from Gardener `v0` to `v1`](deployment/migration_v0_to_v1.md)

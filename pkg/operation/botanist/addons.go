@@ -21,31 +21,37 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gardener/gardener/charts"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/chartrenderer"
-	"github.com/gardener/gardener/pkg/client/kubernetes"
+	"github.com/gardener/gardener/pkg/controllerutils"
 	netpol "github.com/gardener/gardener/pkg/operation/botanist/addons/networkpolicy"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
-	"github.com/gardener/gardener/pkg/operation/botanist/extensions/dns"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/extensions/dns"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/vpnseedserver"
 	"github.com/gardener/gardener/pkg/operation/common"
-	"github.com/gardener/gardener/pkg/utils"
-	"github.com/gardener/gardener/pkg/utils/flow"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 	versionutils "github.com/gardener/gardener/pkg/utils/version"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// SecretLabelKeyManagedResource is a key for a label on a secret with the value 'managed-resource'.
-const SecretLabelKeyManagedResource = "managed-resource"
+const (
+	// SecretLabelKeyManagedResource is a key for a label on a secret with the value 'managed-resource'.
+	SecretLabelKeyManagedResource = "managed-resource"
+	// gardenerRestartedAtKey is annotation key for timestamp used to restart components.
+	gardenerRestartedAtKey = "gardener.cloud/restarted-at"
+)
 
 // GenerateKubernetesDashboardConfig generates the values which are required to render the chart of
 // the kubernetes-dashboard properly.
@@ -107,30 +113,26 @@ func (b *Botanist) MigrateIngressDNSRecord(ctx context.Context) error {
 
 // DefaultNginxIngressDNSEntry returns a Deployer which removes existing nginx ingress DNSEntry.
 func (b *Botanist) DefaultNginxIngressDNSEntry(seedClient client.Client) component.DeployWaiter {
-	return component.OpDestroy(dns.NewDNSEntry(
+	return component.OpDestroy(dns.NewEntry(
+		b.Logger,
+		seedClient,
+		b.Shoot.SeedNamespace,
 		&dns.EntryValues{
 			Name: common.ShootDNSIngressName,
 			TTL:  *b.Config.Controllers.Shoot.DNSEntryTTLSeconds,
 		},
-		b.Shoot.SeedNamespace,
-		b.K8sSeedClient.ChartApplier(),
-		b.ChartsRootPath,
-		b.Logger,
-		seedClient,
 		nil,
 	))
 }
 
 // DefaultNginxIngressDNSOwner returns DeployWaiter which removes the nginx ingress DNSOwner.
 func (b *Botanist) DefaultNginxIngressDNSOwner(seedClient client.Client) component.DeployWaiter {
-	return component.OpDestroy(dns.NewDNSOwner(
+	return component.OpDestroy(dns.NewOwner(
+		seedClient,
+		b.Shoot.SeedNamespace,
 		&dns.OwnerValues{
 			Name: common.ShootDNSIngressName,
 		},
-		b.Shoot.SeedNamespace,
-		b.K8sSeedClient.ChartApplier(),
-		b.ChartsRootPath,
-		seedClient,
 	))
 }
 
@@ -138,18 +140,19 @@ func (b *Botanist) DefaultNginxIngressDNSOwner(seedClient client.Client) compone
 func (b *Botanist) SetNginxIngressAddress(address string, seedClient client.Client) {
 	if b.NeedsExternalDNS() && !b.Shoot.HibernationEnabled && gardencorev1beta1helper.NginxIngressEnabled(b.Shoot.Info.Spec.Addons) {
 		ownerID := *b.Shoot.Info.Status.ClusterIdentity + "-" + common.ShootDNSIngressName
-		b.Shoot.Components.Extensions.DNS.NginxOwner = dns.NewDNSOwner(
+		b.Shoot.Components.Extensions.DNS.NginxOwner = dns.NewOwner(
+			seedClient,
+			b.Shoot.SeedNamespace,
 			&dns.OwnerValues{
 				Name:    common.ShootDNSIngressName,
-				Active:  true,
+				Active:  pointer.BoolPtr(true),
 				OwnerID: ownerID,
 			},
-			b.Shoot.SeedNamespace,
-			b.K8sSeedClient.ChartApplier(),
-			b.ChartsRootPath,
-			seedClient,
 		)
-		b.Shoot.Components.Extensions.DNS.NginxEntry = dns.NewDNSEntry(
+		b.Shoot.Components.Extensions.DNS.NginxEntry = dns.NewEntry(
+			b.Logger,
+			seedClient,
+			b.Shoot.SeedNamespace,
 			&dns.EntryValues{
 				Name:    common.ShootDNSIngressName,
 				DNSName: b.Shoot.GetIngressFQDN("*"),
@@ -157,11 +160,6 @@ func (b *Botanist) SetNginxIngressAddress(address string, seedClient client.Clie
 				OwnerID: ownerID,
 				TTL:     *b.Config.Controllers.Shoot.DNSEntryTTLSeconds,
 			},
-			b.Shoot.SeedNamespace,
-			b.K8sSeedClient.ChartApplier(),
-			b.ChartsRootPath,
-			b.Logger,
-			seedClient,
 			nil,
 		)
 	}
@@ -194,8 +192,8 @@ func (b *Botanist) GenerateNginxIngressConfig() (map[string]interface{}, error) 
 	return common.GenerateAddonConfig(values, enabled), nil
 }
 
-// DeployManagedResources deploys all the ManagedResource CRDs for the gardener-resource-manager.
-func (b *Botanist) DeployManagedResources(ctx context.Context) error {
+// DeployManagedResourceForAddons deploys all the ManagedResource CRDs for the gardener-resource-manager.
+func (b *Botanist) DeployManagedResourceForAddons(ctx context.Context) error {
 	for name, chartRenderFunc := range map[string]func(context.Context) (*chartrenderer.RenderedChart, error){
 		common.ManagedResourceShootCoreName: b.generateCoreAddonsChart,
 		common.ManagedResourceAddonsName:    b.generateOptionalAddonsChart,
@@ -205,100 +203,12 @@ func (b *Botanist) DeployManagedResources(ctx context.Context) error {
 			return fmt.Errorf("error rendering %q chart: %+v", name, err)
 		}
 
-		if err := common.DeployManagedResourceForShoot(ctx, b.K8sSeedClient.Client(), name, b.Shoot.SeedNamespace, false, renderedChart.AsSecretData()); err != nil {
+		if err := managedresources.CreateForShoot(ctx, b.K8sSeedClient.Client(), b.Shoot.SeedNamespace, name, false, renderedChart.AsSecretData()); err != nil {
 			return err
 		}
 	}
 
-	return b.deployCloudConfigExecutionManagedResource(ctx)
-}
-
-// CloudConfigExecutionManagedResourceName is a constant for the name of a ManagedResource in the seed cluster in the
-// shoot namespace which contains the cloud config user data exeuction script.
-const CloudConfigExecutionManagedResourceName = "shoot-cloud-config-execution"
-
-// deployCloudConfigExecutionManagedResource creates the cloud config managed resource that contains:
-// 1. A secret containing the dedicated cloud config execution script for each worker group
-// 2. A secret containing some shared RBAC policies for downloading the cloud config execution script
-func (b *Botanist) deployCloudConfigExecutionManagedResource(ctx context.Context) error {
-	var (
-		secretLabels = map[string]string{
-			SecretLabelKeyManagedResource: CloudConfigExecutionManagedResourceName,
-		}
-		wantedSecretNames = sets.NewString()
-	)
-
-	cloudConfigCharts := map[string]func() (*chartrenderer.RenderedChart, error){
-		"shoot-cloud-config-rbac": b.generateCloudConfigRBACChart,
-	}
-
-	bootstrapTokenSecret, err := kutil.ComputeBootstrapToken(ctx, b.K8sShootClient.Client(), utils.ComputeSHA256Hex([]byte(time.Now().Format("2006-01-02")))[:6], "A bootstrap token generated by Gardener.", 48*time.Hour)
-	if err != nil {
-		return fmt.Errorf("error computing bootstrap token for shoot cloud config: %+v", err)
-	}
-
-	//  for each worker pool add a secret containing the cloud config execution script
-	for _, worker := range b.Shoot.Info.Spec.Provider.Workers {
-		name := fmt.Sprintf("shoot-cloud-config-execution-%s", worker.Name)
-		cloudConfigCharts[name] = b.getGenerateCloudConfigExecutionChartFunc(name, worker, bootstrapTokenSecret)
-	}
-
-	cloudConfigManagedResource := common.NewManagedResourceForShoot(b.K8sSeedClient.Client(), CloudConfigExecutionManagedResourceName, b.Shoot.SeedNamespace, false)
-
-	// reconcile secrets and reference them to the ManagedResource
-	fns := make([]flow.TaskFn, 0, len(cloudConfigCharts))
-	for name, renderChartFunc := range cloudConfigCharts {
-		renderedChart, err := renderChartFunc()
-		if err != nil {
-			return fmt.Errorf("error rendering %q chart: %+v", name, err)
-		}
-
-		secretName, secret := common.NewManagedResourceSecret(b.K8sSeedClient.Client(), name, b.Shoot.SeedNamespace)
-		cloudConfigManagedResource.WithSecretRef(secretName)
-		wantedSecretNames.Insert(secretName)
-
-		fns = append(fns, func(ctx context.Context) error {
-			return secret.
-				WithKeyValues(renderedChart.AsSecretData()).
-				WithLabels(map[string]string{SecretLabelKeyManagedResource: CloudConfigExecutionManagedResourceName}).
-				Reconcile(ctx)
-		})
-	}
-
-	if err := flow.Parallel(fns...)(ctx); err != nil {
-		return err
-	}
-	if err := cloudConfigManagedResource.Reconcile(ctx); err != nil {
-		return err
-	}
-
-	return b.deleteStaleSecretsMatchLabel(ctx, secretLabels, wantedSecretNames)
-}
-
-// deleteStaleSecretsMatchLabel deletes the stale secrets that match the labels but are not used anymore
-func (b *Botanist) deleteStaleSecretsMatchLabel(ctx context.Context, labels map[string]string, wantedSecretNames sets.String) error {
-	c := b.K8sSeedClient.Client()
-
-	secretList := &corev1.SecretList{}
-	if err := c.List(ctx, secretList, client.InNamespace(b.Shoot.SeedNamespace), client.MatchingLabels(labels)); err != nil {
-		return err
-	}
-
-	fns := make([]flow.TaskFn, 0, meta.LenList(secretList))
-	for _, secret := range secretList.Items {
-		if !wantedSecretNames.Has(secret.Name) {
-			toDelete := &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      secret.Name,
-					Namespace: secret.Namespace,
-				},
-			}
-			fns = append(fns, func(ctx context.Context) error {
-				return client.IgnoreNotFound(c.Delete(ctx, toDelete, kubernetes.DefaultDeleteOptions...))
-			})
-		}
-	}
-	return flow.Parallel(fns...)(ctx)
+	return nil
 }
 
 // generateCoreAddonsChart renders the gardener-resource-manager configuration for the core addons. After that it
@@ -313,6 +223,7 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 			"vpaEnabled":        b.Shoot.WantsVerticalPodAutoscaler,
 		}
 		coreDNSConfig = map[string]interface{}{
+			"nodeNetwork": b.Shoot.GetNodeNetwork(),
 			"service": map[string]interface{}{
 				"clusterDNS": b.Shoot.Networks.CoreDNS.String(),
 				// TODO: resolve conformance test issue before changing:
@@ -400,12 +311,26 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 		shootInfo["domain"] = *domain
 	}
 	var extensions []string
-	for extensionType := range b.Shoot.Extensions {
+	for extensionType := range b.Shoot.Components.Extensions.Extension.Extensions() {
 		extensions = append(extensions, extensionType)
 	}
 	shootInfo["extensions"] = strings.Join(extensions, ",")
 
-	coreDNS, err := b.InjectShootShootImages(coreDNSConfig, common.CoreDNSImageName)
+	coreDNSRestartTimestamp, err := b.getCoreDNSRestartTimestamp(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(coreDNSRestartTimestamp) != 0 {
+		coreDNSConfig["deployment"] = map[string]interface{}{
+			"spec": map[string]interface{}{
+				"podAnnotations": map[string]interface{}{
+					gardenerRestartedAtKey: coreDNSRestartTimestamp,
+				},
+			},
+		}
+	}
+
+	coreDNS, err := b.InjectShootShootImages(coreDNSConfig, charts.ImageNameCoredns)
 	if err != nil {
 		return nil, err
 	}
@@ -418,26 +343,26 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 		nodeLocalDNSConfig["dnsServer"] = b.Shoot.Networks.CoreDNS.String()
 	}
 
-	nodelocalDNS, err := b.InjectShootShootImages(nodeLocalDNSConfig, common.NodeLocalDNSImageName)
+	nodelocalDNS, err := b.InjectShootShootImages(nodeLocalDNSConfig, charts.ImageNameNodeLocalDns)
 	if err != nil {
 		return nil, err
 	}
 
-	nodeProblemDetector, err := b.InjectShootShootImages(nodeProblemDetectorConfig, common.NodeProblemDetectorImageName)
+	nodeProblemDetector, err := b.InjectShootShootImages(nodeProblemDetectorConfig, charts.ImageNameNodeProblemDetector)
 	if err != nil {
 		return nil, err
 	}
 
-	kubeProxy, err := b.InjectShootShootImages(kubeProxyConfig, common.KubeProxyImageName, common.AlpineImageName)
+	kubeProxy, err := b.InjectShootShootImages(kubeProxyConfig, charts.ImageNameKubeProxy, charts.ImageNameAlpine)
 	if err != nil {
 		return nil, err
 	}
 
-	nodeExporter, err := b.InjectShootShootImages(nodeExporterConfig, common.NodeExporterImageName)
+	nodeExporter, err := b.InjectShootShootImages(nodeExporterConfig, charts.ImageNameNodeExporter)
 	if err != nil {
 		return nil, err
 	}
-	blackboxExporter, err := b.InjectShootShootImages(blackboxExporterConfig, common.BlackboxExporterImageName)
+	blackboxExporter, err := b.InjectShootShootImages(blackboxExporterConfig, charts.ImageNameBlackboxExporter)
 	if err != nil {
 		return nil, err
 	}
@@ -454,7 +379,7 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 		"podMutatorEnabled": b.APIServerSNIPodMutatorEnabled(),
 	}
 
-	apiserverProxy, err := b.InjectShootShootImages(apiserverProxyConfig, common.APIServerProxySidecarImageName, common.APIServerProxyImageName)
+	apiserverProxy, err := b.InjectShootShootImages(apiserverProxyConfig, charts.ImageNameApiserverProxySidecar, charts.ImageNameApiserverProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -486,14 +411,14 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 
 	if b.Shoot.KonnectivityTunnelEnabled {
 		konnectivityAgentConfig := map[string]interface{}{
-			"proxyHost": common.GetAPIServerDomain(b.Shoot.InternalClusterDomain),
+			"proxyHost": gutil.GetAPIServerDomain(b.Shoot.InternalClusterDomain),
 			"podAnnotations": map[string]interface{}{
 				"checksum/secret-konnectivity-agent": b.CheckSums["konnectivity-agent"],
 			},
 		}
 
 		// Konnectivity agent related values
-		konnectivityAgent, err := b.InjectShootShootImages(konnectivityAgentConfig, common.KonnectivityAgentImageName)
+		konnectivityAgent, err := b.InjectShootShootImages(konnectivityAgentConfig, charts.ImageNameKonnectivityAgent)
 		if err != nil {
 			return nil, err
 		}
@@ -501,7 +426,7 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 		values["konnectivity-agent"] = common.GenerateAddonConfig(konnectivityAgent, true)
 
 		// TODO: remove when konnectivity tunnel is the default tunneling method for all shoots.
-		secret, err := common.GetSecretFromSecretRef(ctx, shootClient, &corev1.SecretReference{Namespace: metav1.NamespaceSystem, Name: "vpn-shoot"})
+		secret, err := kutil.GetSecretByReference(ctx, shootClient, &corev1.SecretReference{Namespace: metav1.NamespaceSystem, Name: "vpn-shoot"})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return nil, err
 		}
@@ -511,6 +436,40 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 				return nil, err
 			}
 		}
+	} else if b.Shoot.ReversedVPNEnabled {
+		var (
+			vpnTLSAuthSecret = b.Secrets[vpnseedserver.VpnSeedServerTLSAuth]
+			vpnShootSecret   = b.Secrets[vpnseedserver.VpnShootSecretName]
+			vpnShootConfig   = map[string]interface{}{
+				"endpoint":       b.outOfClusterAPIServerFQDN(),
+				"port":           "8132",
+				"podNetwork":     b.Shoot.Networks.Pods.String(),
+				"serviceNetwork": b.Shoot.Networks.Services.String(),
+				"tlsAuth":        vpnTLSAuthSecret.Data["vpn.tlsauth"],
+				"vpnShootSecretData": map[string]interface{}{
+					"ca":     vpnShootSecret.Data["ca.crt"],
+					"tlsCrt": vpnShootSecret.Data["tls.crt"],
+					"tlsKey": vpnShootSecret.Data["tls.key"],
+				},
+				"reversedVPN": map[string]interface{}{
+					"enabled": true,
+				},
+				"podAnnotations": map[string]interface{}{
+					"checksum/secret-vpn-shoot-client": b.CheckSums[vpnseedserver.VpnShootSecretName],
+				},
+			}
+		)
+
+		if nodeNetwork != nil {
+			vpnShootConfig["nodeNetwork"] = *nodeNetwork
+		}
+
+		vpnShoot, err := b.InjectShootShootImages(vpnShootConfig, charts.ImageNameVpnShootClient)
+		if err != nil {
+			return nil, err
+		}
+
+		values["vpn-shoot"] = common.GenerateAddonConfig(vpnShoot, true)
 	} else {
 		var (
 			vpnTLSAuthSecret = b.Secrets["vpn-seed-tlsauth"]
@@ -524,6 +483,9 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 					"tlsCrt": vpnShootSecret.Data["tls.crt"],
 					"tlsKey": vpnShootSecret.Data["tls.key"],
 				},
+				"reversedVPN": map[string]interface{}{
+					"enabled": false,
+				},
 				"podAnnotations": map[string]interface{}{
 					"checksum/secret-vpn-shoot": b.CheckSums["vpn-shoot"],
 				},
@@ -531,7 +493,7 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 		)
 
 		// OpenVPN related values
-		if openvpnDiffieHellmanSecret, ok := b.Secrets[common.GardenRoleOpenVPNDiffieHellman]; ok {
+		if openvpnDiffieHellmanSecret, ok := b.Secrets[v1beta1constants.GardenRoleOpenVPNDiffieHellman]; ok {
 			vpnShootConfig["diffieHellmanKey"] = openvpnDiffieHellmanSecret.Data["dh2048.pem"]
 		}
 
@@ -539,7 +501,7 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 			vpnShootConfig["nodeNetwork"] = *nodeNetwork
 		}
 
-		vpnShoot, err := b.InjectShootShootImages(vpnShootConfig, common.VPNShootImageName)
+		vpnShoot, err := b.InjectShootShootImages(vpnShootConfig, charts.ImageNameVpnShoot)
 		if err != nil {
 			return nil, err
 		}
@@ -547,7 +509,7 @@ func (b *Botanist) generateCoreAddonsChart(ctx context.Context) (*chartrenderer.
 		values["vpn-shoot"] = common.GenerateAddonConfig(vpnShoot, true)
 	}
 
-	return b.K8sShootClient.ChartRenderer().Render(filepath.Join(common.ChartPath, "shoot-core", "components"), "shoot-core", metav1.NamespaceSystem, values)
+	return b.K8sShootClient.ChartRenderer().Render(filepath.Join(charts.Path, "shoot-core", "components"), "shoot-core", metav1.NamespaceSystem, values)
 }
 
 // generateOptionalAddonsChart renders the gardener-resource-manager chart for the optional addons. After that it
@@ -561,14 +523,14 @@ func (b *Botanist) generateOptionalAddonsChart(_ context.Context) (*chartrendere
 	if err != nil {
 		return nil, err
 	}
-	kubernetesDashboardImagesToInject := []string{common.KubernetesDashboardImageName}
+	kubernetesDashboardImagesToInject := []string{charts.ImageNameKubernetesDashboard}
 
 	k8sVersionLessThan116, err := versionutils.CompareVersions(b.Shoot.Info.Spec.Kubernetes.Version, "<", "1.16")
 	if err != nil {
 		return nil, err
 	}
 	if !k8sVersionLessThan116 {
-		kubernetesDashboardImagesToInject = append(kubernetesDashboardImagesToInject, common.KubernetesDashboardMetricsScraperImageName)
+		kubernetesDashboardImagesToInject = append(kubernetesDashboardImagesToInject, charts.ImageNameKubernetesDashboardMetricsScraper)
 	}
 
 	kubernetesDashboard, err := b.InjectShootShootImages(kubernetesDashboardConfig, kubernetesDashboardImagesToInject...)
@@ -580,12 +542,12 @@ func (b *Botanist) generateOptionalAddonsChart(_ context.Context) (*chartrendere
 	if err != nil {
 		return nil, err
 	}
-	nginxIngress, err := b.InjectShootShootImages(nginxIngressConfig, common.NginxIngressControllerImageName, common.IngressDefaultBackendImageName)
+	nginxIngress, err := b.InjectShootShootImages(nginxIngressConfig, charts.ImageNameNginxIngressController, charts.ImageNameIngressDefaultBackend)
 	if err != nil {
 		return nil, err
 	}
 
-	return b.K8sShootClient.ChartRenderer().Render(filepath.Join(common.ChartPath, "shoot-addons"), "addons", metav1.NamespaceSystem, map[string]interface{}{
+	return b.K8sShootClient.ChartRenderer().Render(filepath.Join(charts.Path, "shoot-addons"), "addons", metav1.NamespaceSystem, map[string]interface{}{
 		"global":               global,
 		"kubernetes-dashboard": kubernetesDashboard,
 		"nginx-ingress":        nginxIngress,
@@ -597,4 +559,30 @@ func (b *Botanist) generateOptionalAddonsChart(_ context.Context) (*chartrendere
 // available.
 func (b *Botanist) outOfClusterAPIServerFQDN() string {
 	return fmt.Sprintf("%s.", b.Shoot.ComputeOutOfClusterAPIServerAddress(b.APIServerAddress, true))
+}
+
+// getCoreDNSRestartTimestamp returns a timestamp that can potentially restart the CoreDNS deployment.
+func (b *Botanist) getCoreDNSRestartTimestamp(ctx context.Context) (string, error) {
+	if controllerutils.HasTask(b.Shoot.Info.Annotations, v1beta1constants.ShootTaskRestartCoreAddons) {
+		return time.Now().UTC().Format(time.RFC3339), nil
+	}
+
+	coreDNSDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      common.CoreDNSDeploymentName,
+			Namespace: metav1.NamespaceSystem,
+		},
+	}
+	if err := b.K8sShootClient.Client().Get(ctx, client.ObjectKeyFromObject(coreDNSDeployment), coreDNSDeployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", err
+	}
+
+	val, ok := coreDNSDeployment.Spec.Template.ObjectMeta.Annotations[gardenerRestartedAtKey]
+	if !ok {
+		return "", nil
+	}
+	return val, nil
 }

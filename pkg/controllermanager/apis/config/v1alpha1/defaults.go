@@ -109,6 +109,12 @@ func SetDefaults_ControllerManagerConfiguration(obj *ControllerManagerConfigurat
 		}
 	}
 
+	if obj.Controllers.ShootRetry == nil {
+		obj.Controllers.ShootRetry = &ShootRetryControllerConfiguration{
+			ConcurrentSyncs: 5,
+		}
+	}
+
 	if obj.Controllers.Seed == nil {
 		obj.Controllers.Seed = &SeedControllerConfiguration{
 			ConcurrentSyncs: 5,
@@ -125,18 +131,19 @@ func SetDefaults_ControllerManagerConfiguration(obj *ControllerManagerConfigurat
 		v := metav1.Duration{Duration: 5 * obj.Controllers.Seed.MonitorPeriod.Duration}
 		obj.Controllers.Seed.ShootMonitorPeriod = &v
 	}
+
+	if obj.Controllers.ManagedSeedSet == nil {
+		obj.Controllers.ManagedSeedSet = &ManagedSeedSetControllerConfiguration{
+			ConcurrentSyncs: 5,
+			SyncPeriod: metav1.Duration{
+				Duration: 30 * time.Minute,
+			},
+		}
+	}
 }
 
-// SetDefaults_GardenClientConnection sets defaults for the client connection.
-func SetDefaults_GardenClientConnection(obj *componentbaseconfigv1alpha1.ClientConnectionConfiguration) {
-	//componentbaseconfigv1alpha1.RecommendedDefaultClientConnectionConfiguration(obj)
-	// https://github.com/kubernetes/client-go/issues/76#issuecomment-396170694
-	if len(obj.AcceptContentTypes) == 0 {
-		obj.AcceptContentTypes = "application/json"
-	}
-	if len(obj.ContentType) == 0 {
-		obj.ContentType = "application/json"
-	}
+// SetDefaults_ClientConnectionConfiguration sets defaults for the garden client connection.
+func SetDefaults_ClientConnectionConfiguration(obj *componentbaseconfigv1alpha1.ClientConnectionConfiguration) {
 	if obj.QPS == 0.0 {
 		obj.QPS = 50.0
 	}
@@ -147,9 +154,11 @@ func SetDefaults_GardenClientConnection(obj *componentbaseconfigv1alpha1.ClientC
 
 // SetDefaults_LeaderElectionConfiguration sets defaults for the leader election of the Gardener controller manager.
 func SetDefaults_LeaderElectionConfiguration(obj *LeaderElectionConfiguration) {
-	componentbaseconfigv1alpha1.RecommendedDefaultLeaderElectionConfiguration(&obj.LeaderElectionConfiguration)
+	if obj.ResourceLock == "" {
+		obj.ResourceLock = resourcelock.LeasesResourceLock
+	}
 
-	obj.ResourceLock = resourcelock.ConfigMapsResourceLock
+	componentbaseconfigv1alpha1.RecommendedDefaultLeaderElectionConfiguration(&obj.LeaderElectionConfiguration)
 
 	if len(obj.LockObjectNamespace) == 0 {
 		obj.LockObjectNamespace = ControllerManagerDefaultLockObjectNamespace
@@ -163,5 +172,20 @@ func SetDefaults_LeaderElectionConfiguration(obj *LeaderElectionConfiguration) {
 func SetDefaults_EventControllerConfiguration(obj *EventControllerConfiguration) {
 	if obj.TTLNonShootEvents == nil {
 		obj.TTLNonShootEvents = &metav1.Duration{Duration: 1 * time.Hour}
+	}
+}
+
+// SetDefaults_ShootRetryControllerConfiguration sets defaults for the ShootRetryControllerConfiguration.
+func SetDefaults_ShootRetryControllerConfiguration(obj *ShootRetryControllerConfiguration) {
+	if obj.RetryPeriod == nil {
+		obj.RetryPeriod = &metav1.Duration{Duration: 10 * time.Minute}
+	}
+}
+
+// SetDefaults_ManagedSeedSetControllerConfiguration sets defaults for the given ManagedSeedSetControllerConfiguration.
+func SetDefaults_ManagedSeedSetControllerConfiguration(obj *ManagedSeedSetControllerConfiguration) {
+	if obj.MaxShootRetries == nil {
+		v := 3
+		obj.MaxShootRetries = &v
 	}
 }

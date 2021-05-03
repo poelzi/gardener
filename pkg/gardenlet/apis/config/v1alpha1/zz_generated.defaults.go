@@ -35,15 +35,12 @@ func RegisterDefaults(scheme *runtime.Scheme) error {
 func SetObjectDefaults_GardenletConfiguration(in *GardenletConfiguration) {
 	SetDefaults_GardenletConfiguration(in)
 	if in.GardenClientConnection != nil {
-		SetDefaults_GardenClientConnection(in.GardenClientConnection)
 		SetDefaults_ClientConnectionConfiguration(&in.GardenClientConnection.ClientConnectionConfiguration)
 	}
 	if in.SeedClientConnection != nil {
-		SetDefaults_SeedClientConnection(in.SeedClientConnection)
 		SetDefaults_ClientConnectionConfiguration(&in.SeedClientConnection.ClientConnectionConfiguration)
 	}
 	if in.ShootClientConnection != nil {
-		SetDefaults_ShootClientConnection(in.ShootClientConnection)
 		SetDefaults_ClientConnectionConfiguration(&in.ShootClientConnection.ClientConnectionConfiguration)
 	}
 	if in.Controllers != nil {
@@ -77,11 +74,11 @@ func SetObjectDefaults_GardenletConfiguration(in *GardenletConfiguration) {
 		if in.Controllers.ShootStateSync != nil {
 			SetDefaults_ShootStateSyncControllerConfiguration(in.Controllers.ShootStateSync)
 		}
-		if in.Controllers.ShootedSeedRegistration != nil {
-			SetDefaults_ShootedSeedRegistrationControllerConfiguration(in.Controllers.ShootedSeedRegistration)
-		}
 		if in.Controllers.SeedAPIServerNetworkPolicy != nil {
 			SetDefaults_SeedAPIServerNetworkPolicyControllerConfiguration(in.Controllers.SeedAPIServerNetworkPolicy)
+		}
+		if in.Controllers.ManagedSeed != nil {
+			SetDefaults_ManagedSeedControllerConfiguration(in.Controllers.ManagedSeed)
 		}
 	}
 	if in.LeaderElection != nil {

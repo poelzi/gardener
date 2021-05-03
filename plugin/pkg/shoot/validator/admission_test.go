@@ -32,10 +32,11 @@ import (
 	"k8s.io/utils/pointer"
 
 	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	coreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/operation/common"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	. "github.com/gardener/gardener/pkg/utils/test/matchers"
 	. "github.com/gardener/gardener/plugin/pkg/shoot/validator"
 )
@@ -62,9 +63,6 @@ var _ = Describe("validator", func() {
 
 			unmanagedDNSProvider = core.DNSUnmanaged
 			baseDomain           = "example.com"
-			useAsSeedValue       = "true,no-gardenlet,invisible"
-			useAsSeedKey         = "shoot.gardener.cloud/use-as-seed"
-			gardenNamespace      = "garden"
 
 			validMachineImageName     = "some-machineimage"
 			validMachineImageVersions = []core.MachineImageVersion{
@@ -74,7 +72,10 @@ var _ = Describe("validator", func() {
 					},
 				},
 			}
-			volumeType = "volume-type-1"
+			volumeType        = "volume-type-1"
+			volumeType2       = "volume-type-2"
+			minVolSize        = resource.MustParse("100Gi")
+			minVolSizeMachine = resource.MustParse("50Gi")
 
 			seedPodsCIDR     = "10.241.128.0/17"
 			seedServicesCIDR = "10.241.0.0/17"
@@ -128,11 +129,26 @@ var _ = Describe("validator", func() {
 							Memory: resource.MustParse("100Gi"),
 							Usable: &falseVar,
 						},
+						{
+							Name:   "machine-type-2",
+							CPU:    resource.MustParse("2"),
+							GPU:    resource.MustParse("0"),
+							Memory: resource.MustParse("100Gi"),
+							Storage: &core.MachineTypeStorage{
+								Type:    volumeType,
+								MinSize: &minVolSizeMachine,
+							},
+						},
 					},
 					VolumeTypes: []core.VolumeType{
 						{
-							Name:  "volume-type-1",
+							Name:  volumeType,
 							Class: "super-premium",
+						},
+						{
+							Name:    volumeType2,
+							Class:   "super-premium",
+							MinSize: &minVolSize,
 						},
 					},
 					Regions: []core.Region{
@@ -414,159 +430,6 @@ var _ = Describe("validator", func() {
 			})
 		})
 
-		Context(fmt.Sprintf("test '%s' annotation", useAsSeedKey), func() {
-			var (
-				oldShoot      *core.Shoot
-				gardenProject = core.Project{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: gardenNamespace,
-					},
-					Spec: core.ProjectSpec{
-						Namespace: &gardenNamespace,
-					},
-				}
-				shootedSeed core.Seed
-			)
-
-			BeforeEach(func() {
-				shoot = *shootBase.DeepCopy()
-				shoot.Annotations = make(map[string]string)
-				shoot.Annotations[useAsSeedKey] = useAsSeedValue
-				shoot.Namespace = gardenNamespace
-
-				shootedSeed = *seedBase.DeepCopy()
-				shootedSeed.Name = shoot.Name
-
-				oldShoot = shoot.DeepCopy()
-
-			})
-
-			It("should admit removing the use-as-seed annotation for shoots with namespace != garden", func() {
-				shoot.Namespace = namespaceName
-				oldShoot.Namespace = namespaceName
-
-				delete(shoot.Annotations, useAsSeedKey)
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&project)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).NotTo(HaveOccurred())
-			})
-
-			It("should admit update of shoot with already removed annotation", func() {
-				delete(oldShoot.Annotations, useAsSeedKey)
-				shoot.Spec.Provider.Workers[0].Maximum++
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should admit update of shoot with already empty annotation", func() {
-				oldShoot.Annotations[useAsSeedKey] = ""
-				shoot.Spec.Provider.Workers[0].Maximum++
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should admit update of shoot which does not remove the use-as-seed annotation", func() {
-				shoot.Spec.Provider.Workers[0].Maximum++
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should admit removal of the annotation when there is no seed with name of the shoot", func() {
-				delete(shoot.Annotations, useAsSeedKey)
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should admit removal of the annotation when the respective seed is empty", func() {
-				delete(shoot.Annotations, useAsSeedKey)
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&shootedSeed)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).ToNot(HaveOccurred())
-			})
-
-			It("should reject removal of the annotation when the respective seed hosts shoots", func() {
-				delete(shoot.Annotations, useAsSeedKey)
-
-				endShoot := *shootBase.DeepCopy()
-				endShoot.Spec.SeedName = &shoot.Name
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&shootedSeed)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Shoots().Informer().GetStore().Add(&endShoot)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).To(HaveOccurred())
-				Expect(err).To(BeForbiddenError())
-			})
-
-			It("should allow removal of the annotation event though the respective seed is used by a backupbucket (Bucket will be deleted during Seed reconciliation)", func() {
-				bucket := core.BackupBucket{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "backupbucket",
-					},
-					Spec: core.BackupBucketSpec{
-						SeedName: &shoot.Name,
-					},
-				}
-				delete(shoot.Annotations, useAsSeedKey)
-
-				Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&gardenProject)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&shootedSeed)).To(Succeed())
-				Expect(coreInformerFactory.Core().InternalVersion().BackupBuckets().Informer().GetStore().Add(&bucket)).To(Succeed())
-
-				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
-
-				err := admissionHandler.Admit(context.TODO(), attrs, nil)
-				Expect(err).ToNot(HaveOccurred())
-			})
-		})
-
 		Context("shoot with generate name", func() {
 			BeforeEach(func() {
 				shoot.ObjectMeta = metav1.ObjectMeta{
@@ -747,27 +610,27 @@ var _ = Describe("validator", func() {
 				Entry(
 					"should add annotation for failed shoot",
 					specUpdate, confineEnabled, confineEnabled, operationFaild, operationFaild,
-					HaveKeyWithValue(common.FailedShootNeedsRetryOperation, "true"),
+					HaveKeyWithValue(v1beta1constants.FailedShootNeedsRetryOperation, "true"),
 				),
 				Entry(
 					"should not add annotation for failed shoot because of missing spec change",
 					!specUpdate, confineEnabled, confineEnabled, operationFaild, operationFaild,
-					Not(HaveKey(common.FailedShootNeedsRetryOperation)),
+					Not(HaveKey(v1beta1constants.FailedShootNeedsRetryOperation)),
 				),
 				Entry(
 					"should not add annotation for succeeded shoot",
 					specUpdate, confineEnabled, confineEnabled, operationFaild, operationSucceeded,
-					Not(HaveKey(common.FailedShootNeedsRetryOperation)),
+					Not(HaveKey(v1beta1constants.FailedShootNeedsRetryOperation)),
 				),
 				Entry(
 					"should not add annotation for shoot w/o confine spec roll-out enabled",
 					specUpdate, confineEnabled, !confineEnabled, operationFaild, operationFaild,
-					Not(HaveKey(common.FailedShootNeedsRetryOperation)),
+					Not(HaveKey(v1beta1constants.FailedShootNeedsRetryOperation)),
 				),
 				Entry(
 					"should not add annotation for shoot w/o last operation",
 					specUpdate, confineEnabled, confineEnabled, nil, nil,
-					Not(HaveKey(common.FailedShootNeedsRetryOperation)),
+					Not(HaveKey(v1beta1constants.FailedShootNeedsRetryOperation)),
 				),
 			)
 		})
@@ -814,7 +677,7 @@ var _ = Describe("validator", func() {
 
 			It("should allow adding the deletion confirmation", func() {
 				shoot.Annotations = make(map[string]string)
-				shoot.Annotations[common.ConfirmationDeletion] = "true"
+				shoot.Annotations[gutil.ConfirmationDeletion] = "true"
 
 				attrs := admission.NewAttributesRecord(&shoot, oldShoot, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Update, &metav1.UpdateOptions{}, false, nil)
 
@@ -916,7 +779,7 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Admit(context.TODO(), attrs, nil)
 
 				Expect(err).To(Not(HaveOccurred()))
-				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, common.ShootTaskDeployInfrastructure)).To(BeTrue())
+				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, v1beta1constants.ShootTaskDeployInfrastructure)).To(BeTrue())
 			})
 
 			It("should add deploy infrastructure task because shoot is waking up from hibernation", func() {
@@ -931,7 +794,7 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Admit(context.TODO(), attrs, nil)
 
 				Expect(err).To(Not(HaveOccurred()))
-				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, common.ShootTaskDeployInfrastructure)).To(BeTrue())
+				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, v1beta1constants.ShootTaskDeployInfrastructure)).To(BeTrue())
 			})
 
 			It("should add deploy infrastructure task because spec has changed", func() {
@@ -943,7 +806,7 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Admit(context.TODO(), attrs, nil)
 
 				Expect(err).To(Not(HaveOccurred()))
-				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, common.ShootTaskDeployInfrastructure)).To(BeTrue())
+				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, v1beta1constants.ShootTaskDeployInfrastructure)).To(BeTrue())
 			})
 
 			It("should not add deploy infrastructure task because spec has not changed", func() {
@@ -951,7 +814,7 @@ var _ = Describe("validator", func() {
 				err := admissionHandler.Admit(context.TODO(), attrs, nil)
 
 				Expect(err).To(Not(HaveOccurred()))
-				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, common.ShootTaskDeployInfrastructure)).ToNot(BeTrue())
+				Expect(controllerutils.HasTask(shoot.ObjectMeta.Annotations, v1beta1constants.ShootTaskDeployInfrastructure)).ToNot(BeTrue())
 			})
 		})
 
@@ -1936,6 +1799,55 @@ var _ = Describe("validator", func() {
 					err := admissionHandler.Admit(context.TODO(), attrs, nil)
 
 					Expect(err).ToNot(HaveOccurred())
+				})
+
+				It("should reject due to wrong volume size (volume type constraint)", func() {
+					boundaryVolSize := minVolSize
+					boundaryVolSize.Add(resource.MustParse("-1"))
+
+					boundaryVolSizeMachine := minVolSizeMachine
+					boundaryVolSizeMachine.Add(resource.MustParse("-1"))
+
+					shoot.Spec.Provider.Workers = []core.Worker{
+						{
+							Machine: core.Machine{
+								Type: "machine-type-1",
+							},
+							Volume: &core.Volume{
+								Type:       &volumeType2,
+								VolumeSize: boundaryVolSize.String(),
+							},
+						},
+						{
+							Machine: core.Machine{
+								Type: "machine-type-2",
+							},
+							Volume: &core.Volume{
+								Type:       &volumeType,
+								VolumeSize: boundaryVolSize.String(),
+							},
+						},
+						{
+							Machine: core.Machine{
+								Type: "machine-type-2",
+							},
+							Volume: &core.Volume{
+								Type:       &volumeType,
+								VolumeSize: boundaryVolSizeMachine.String(),
+							},
+						},
+					}
+
+					Expect(coreInformerFactory.Core().InternalVersion().Projects().Informer().GetStore().Add(&project)).To(Succeed())
+					Expect(coreInformerFactory.Core().InternalVersion().CloudProfiles().Informer().GetStore().Add(&cloudProfile)).To(Succeed())
+					Expect(coreInformerFactory.Core().InternalVersion().Seeds().Informer().GetStore().Add(&seed)).To(Succeed())
+					attrs := admission.NewAttributesRecord(&shoot, nil, core.Kind("Shoot").WithVersion("version"), shoot.Namespace, shoot.Name, core.Resource("shoots").WithVersion("version"), "", admission.Create, &metav1.CreateOptions{}, false, nil)
+
+					err := admissionHandler.Admit(context.TODO(), attrs, nil)
+
+					Expect(err).To(BeForbiddenError())
+					Expect(err.Error()).To(ContainSubstring("spec.provider.workers[0].volume.size"))
+					Expect(err.Error()).To(ContainSubstring("spec.provider.workers[2].volume.size"))
 				})
 			})
 		})

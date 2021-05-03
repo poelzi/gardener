@@ -180,7 +180,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 						Domain: &domain,
 					},
 					Kubernetes: core.Kubernetes{
-						Version: "1.11.2",
+						Version: "1.15.2",
 						KubeAPIServer: &core.KubeAPIServerConfig{
 							OIDCConfig: &core.OIDCConfig{
 								CABundle:       pointer.StringPtr("-----BEGIN CERTIFICATE-----\nMIICRzCCAfGgAwIBAgIJALMb7ecMIk3MMA0GCSqGSIb3DQEBCwUAMH4xCzAJBgNV\nBAYTAkdCMQ8wDQYDVQQIDAZMb25kb24xDzANBgNVBAcMBkxvbmRvbjEYMBYGA1UE\nCgwPR2xvYmFsIFNlY3VyaXR5MRYwFAYDVQQLDA1JVCBEZXBhcnRtZW50MRswGQYD\nVQQDDBJ0ZXN0LWNlcnRpZmljYXRlLTAwIBcNMTcwNDI2MjMyNjUyWhgPMjExNzA0\nMDIyMzI2NTJaMH4xCzAJBgNVBAYTAkdCMQ8wDQYDVQQIDAZMb25kb24xDzANBgNV\nBAcMBkxvbmRvbjEYMBYGA1UECgwPR2xvYmFsIFNlY3VyaXR5MRYwFAYDVQQLDA1J\nVCBEZXBhcnRtZW50MRswGQYDVQQDDBJ0ZXN0LWNlcnRpZmljYXRlLTAwXDANBgkq\nhkiG9w0BAQEFAANLADBIAkEAtBMa7NWpv3BVlKTCPGO/LEsguKqWHBtKzweMY2CV\ntAL1rQm913huhxF9w+ai76KQ3MHK5IVnLJjYYA5MzP2H5QIDAQABo1AwTjAdBgNV\nHQ4EFgQU22iy8aWkNSxv0nBxFxerfsvnZVMwHwYDVR0jBBgwFoAU22iy8aWkNSxv\n0nBxFxerfsvnZVMwDAYDVR0TBAUwAwEB/zANBgkqhkiG9w0BAQsFAANBAEOefGbV\nNcHxklaW06w6OBYJPwpIhCVozC1qdxGX1dg8VkEKzjOzjgqVD30m59OFmSlBmHsl\nnkVA6wyOSDYBf3o=\n-----END CERTIFICATE-----"),
@@ -190,6 +190,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 								IssuerURL:      pointer.StringPtr("https://some-endpoint.com"),
 								UsernameClaim:  pointer.StringPtr("user-claim"),
 								UsernamePrefix: pointer.StringPtr("user-prefix"),
+								RequiredClaims: map[string]string{"foo": "bar"},
 							},
 							AdmissionPlugins: []core.AdmissionPlugin{
 								{
@@ -214,10 +215,8 @@ var _ = Describe("Shoot Validation Tests", func() {
 						KubeControllerManager: &core.KubeControllerManagerConfig{
 							NodeCIDRMaskSize: pointer.Int32Ptr(22),
 							HorizontalPodAutoscalerConfig: &core.HorizontalPodAutoscalerConfig{
-								DownscaleDelay: makeDurationPointer(15 * time.Minute),
-								SyncPeriod:     makeDurationPointer(30 * time.Second),
-								Tolerance:      pointer.Float64Ptr(0.1),
-								UpscaleDelay:   makeDurationPointer(1 * time.Minute),
+								SyncPeriod: makeDurationPointer(30 * time.Second),
+								Tolerance:  pointer.Float64Ptr(0.1),
 							},
 						},
 					},
@@ -247,29 +246,57 @@ var _ = Describe("Shoot Validation Tests", func() {
 			}
 		})
 
-		It("should forbid shoots containing two consecutive hyphens", func() {
-			shoot.ObjectMeta.Name = "sho--ot"
+		DescribeTable("Shoot metadata",
+			func(objectMeta metav1.ObjectMeta, matcher gomegatypes.GomegaMatcher) {
+				shoot.ObjectMeta = objectMeta
 
-			errorList := ValidateShoot(shoot)
+				errorList := ValidateShoot(shoot)
 
-			Expect(errorList).To(HaveLen(1))
-			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("metadata.name"),
-			}))
-		})
+				Expect(errorList).To(matcher)
+			},
 
-		It("should forbid shoots with a not DNS-1123 label compliant name", func() {
-			shoot.ObjectMeta.Name = "shoot.test"
-
-			errorList := ValidateShoot(shoot)
-
-			Expect(errorList).To(HaveLen(1))
-			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeInvalid),
-				"Field": Equal("metadata.name"),
-			}))
-		})
+			Entry("should forbid Shoot with empty metadata",
+				metav1.ObjectMeta{},
+				ConsistOf(
+					PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeRequired),
+						"Field": Equal("metadata.name"),
+					})),
+					PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeRequired),
+						"Field": Equal("metadata.namespace"),
+					})),
+				),
+			),
+			Entry("should forbid Shoot with empty name",
+				metav1.ObjectMeta{Name: "", Namespace: "my-namespace"},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+			Entry("should forbid Shoot with '.' in the name (not a DNS-1123 label compliant name)",
+				metav1.ObjectMeta{Name: "shoot.test", Namespace: "my-namespace"},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+			Entry("should forbid Shoot with '_' in the name (not a DNS-1123 subdomain)",
+				metav1.ObjectMeta{Name: "shoot_test", Namespace: "my-namespace"},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+			Entry("should forbid Shoot with name containing two consecutive hyphens",
+				metav1.ObjectMeta{Name: "sho--ot", Namespace: "my-namespace"},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+		)
 
 		It("should forbid empty Shoot resources", func() {
 			shoot := &core.Shoot{
@@ -295,10 +322,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 				PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeRequired),
 					"Field": Equal("spec.networking.type"),
-				})),
-				PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeRequired),
-					"Field": Equal("spec.maintenance"),
 				})),
 				PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeRequired),
@@ -789,10 +812,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 						"Field": Equal("spec.provider.workers[0].machine.type"),
 					})),
 					PointTo(MatchFields(IgnoreExtras, Fields{
-						"Type":  Equal(field.ErrorTypeRequired),
-						"Field": Equal("spec.provider.workers[0].machine.image"),
-					})),
-					PointTo(MatchFields(IgnoreExtras, Fields{
 						"Type":  Equal(field.ErrorTypeInvalid),
 						"Field": Equal("spec.provider.workers[0].minimum"),
 					})),
@@ -1188,9 +1207,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 			})
 
 			It("should having the a provider with invalid secretName", func() {
-				var (
-					invalidSecretName = "foo/bar"
-				)
+				invalidSecretName := "foo/bar"
 
 				shoot.Spec.DNS.Providers = []core.DNSProvider{
 					{
@@ -1212,7 +1229,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 			})
 
 			It("should having the same provider multiple times", func() {
-
 				shoot.Spec.DNS.Providers = []core.DNSProvider{
 					{
 						SecretName: &secretName,
@@ -1296,19 +1312,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 				}))))
 			})
 
-			It("should forbid unsupported OIDC configuration (for K8S >= v1.10)", func() {
-				shoot.Spec.Kubernetes.Version = "1.10.1"
-				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.RequiredClaims = map[string]string{}
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(HaveLen(1))
-				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal("spec.kubernetes.kubeAPIServer.oidcConfig.requiredClaims"),
-				}))
-			})
-
 			DescribeTable("should forbid issuerURL to be empty string or nil, if clientID exists ", func(errorListSize int, issuerURL *string) {
 				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.ClientID = pointer.StringPtr("someClientID")
 				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.IssuerURL = issuerURL
@@ -1360,25 +1363,9 @@ var _ = Describe("Shoot Validation Tests", func() {
 				Entry("should add error if issuerURL is set but clientID is nil", 1, nil),
 				Entry("should add error if issuerURL is set but clientID is empty string ", 2, pointer.StringPtr("")),
 			)
-
-			It("should allow supported OIDC configuration (for K8S >= v1.11)", func() {
-				shoot.Spec.Kubernetes.Version = "1.11.1"
-				shoot.Spec.Kubernetes.KubeAPIServer.OIDCConfig.RequiredClaims = map[string]string{
-					"some": "claim",
-				}
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(HaveLen(0))
-			})
 		})
 
 		Context("basic authentication", func() {
-			BeforeEach(func() {
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleDelay = nil
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.UpscaleDelay = nil
-			})
-
 			It("should allow basic authentication when kubernetes <= 1.18", func() {
 				shoot.Spec.Kubernetes.Version = "1.18.1"
 				shoot.Spec.Kubernetes.KubeAPIServer.EnableBasicAuthentication = pointer.BoolPtr(true)
@@ -1572,58 +1559,8 @@ var _ = Describe("Shoot Validation Tests", func() {
 			}))))
 		})
 
-		Context("KubeControllerManager validation < 1.12", func() {
+		Context("KubeControllerManager validation", func() {
 			It("should forbid unsupported HPA configuration", func() {
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.SyncPeriod = makeDurationPointer(100 * time.Millisecond)
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.Tolerance = pointer.Float64Ptr(0)
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleDelay = makeDurationPointer(-1 * time.Second)
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.UpscaleDelay = makeDurationPointer(-1 * time.Second)
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.syncPeriod"),
-				})), PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.tolerance"),
-				})), PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.downscaleDelay"),
-				})), PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeInvalid),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.upscaleDelay"),
-				}))))
-			})
-
-			It("should forbid unsupported HPA field configuration for versions < 1.12", func() {
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleStabilization = makeDurationPointer(5 * time.Minute)
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.InitialReadinessDelay = makeDurationPointer(1 * time.Second)
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.CPUInitializationPeriod = makeDurationPointer(5 * time.Minute)
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.downscaleStabilization"),
-				})), PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.initialReadinessDelay"),
-				})), PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.cpuInitializationPeriod"),
-				}))))
-			})
-		})
-
-		Context("KubeControllerManager validation in versions > 1.12", func() {
-			BeforeEach(func() {
-				shoot.Spec.Kubernetes.Version = "1.12.1"
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleDelay = nil
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.UpscaleDelay = nil
-			})
-
-			It("should forbid unsupported HPA configuration in versions > 1.12", func() {
 				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleStabilization = makeDurationPointer(-1 * time.Second)
 				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.InitialReadinessDelay = makeDurationPointer(-1 * time.Second)
 				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.CPUInitializationPeriod = makeDurationPointer(-1 * time.Second)
@@ -1642,22 +1579,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				}))))
 			})
 
-			It("should fail when using configuration parameters from versions older than 1.12", func() {
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.UpscaleDelay = makeDurationPointer(1 * time.Minute)
-				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleDelay = makeDurationPointer(1 * time.Second)
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.upscaleDelay"),
-				})), PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeForbidden),
-					"Field": Equal("spec.kubernetes.kubeControllerManager.horizontalPodAutoscaler.downscaleDelay"),
-				}))))
-			})
-
-			It("should succeed when using valid v1.12 configuration parameters", func() {
+			It("should succeed when using valid configuration parameters", func() {
 				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.DownscaleStabilization = makeDurationPointer(5 * time.Minute)
 				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.InitialReadinessDelay = makeDurationPointer(30 * time.Second)
 				shoot.Spec.Kubernetes.KubeControllerManager.HorizontalPodAutoscalerConfig.CPUInitializationPeriod = makeDurationPointer(5 * time.Minute)
@@ -1665,9 +1587,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				errorList := ValidateShoot(shoot)
 				Expect(errorList).To(HaveLen(0))
 			})
-		})
 
-		Context("KubeControllerManager configuration validation", func() {
 			It("should fail updating immutable fields", func() {
 				shoot.Spec.Kubernetes.KubeControllerManager.NodeCIDRMaskSize = pointer.Int32Ptr(24)
 
@@ -1749,6 +1669,26 @@ var _ = Describe("Shoot Validation Tests", func() {
 					"Field": Equal("spec.kubernetes.kubeControllerManager.podEvictionTimeout"),
 				}))))
 			})
+
+			It("should prevent setting a negative node monitor grace period", func() {
+				shoot.Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod = &metav1.Duration{Duration: -1}
+
+				errorList := ValidateShoot(shoot)
+				Expect(errorList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeControllerManager.nodeMonitorGracePeriod"),
+				}))))
+			})
+
+			It("should prevent setting the node monitor grace period to 0", func() {
+				shoot.Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod = &metav1.Duration{}
+
+				errorList := ValidateShoot(shoot)
+				Expect(errorList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.kubernetes.kubeControllerManager.nodeMonitorGracePeriod"),
+				}))))
+			})
 		})
 
 		Context("KubeProxy validation", func() {
@@ -1762,7 +1702,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 				errorList := ValidateShoot(shoot)
 
 				Expect(errorList).To(BeEmpty())
-
 			})
 
 			It("should succeed when using IPVS mode", func() {
@@ -1771,7 +1710,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 				errorList := ValidateShoot(shoot)
 
 				Expect(errorList).To(BeEmpty())
-
 			})
 
 			It("should fail when using nil proxy mode", func() {
@@ -1794,7 +1732,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				}))))
 			})
 
-			It("should fail when using kubernetes version 1.14.2 and proxy mode is changed", func() {
+			It("should fail when using kubernetes version 1.15 and proxy mode is changed", func() {
 				mode := core.ProxyMode("IPVS")
 				kubernetesConfig := core.KubernetesConfig{}
 				config := core.KubeProxyConfig{
@@ -1802,7 +1740,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 					Mode:             &mode,
 				}
 				shoot.Spec.Kubernetes.KubeProxy = &config
-				shoot.Spec.Kubernetes.Version = "1.14.2"
+				shoot.Spec.Kubernetes.Version = "1.15.2"
 				oldMode := core.ProxyMode("IPTables")
 				oldConfig := core.KubeProxyConfig{
 					KubernetesConfig: kubernetesConfig,
@@ -1820,14 +1758,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 					"Field":  Equal("spec.kubernetes.kubeProxy.mode"),
 					"Detail": Equal(`field is immutable`),
 				}))
-			})
-
-			It("should be successful when using kubernetes version 1.14.1 and proxy mode stays the same", func() {
-				mode := core.ProxyMode("IPVS")
-				shoot.Spec.Kubernetes.Version = "1.14.1"
-				shoot.Spec.Kubernetes.KubeProxy.Mode = &mode
-				errorList := ValidateShoot(shoot)
-				Expect(errorList).To(HaveLen(2))
 			})
 
 			It("should be successful when using kubernetes version 1.16.1 and proxy mode is changed", func() {
@@ -1871,7 +1801,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 			)
 		})
 
-		var negativeDuration = metav1.Duration{Duration: -time.Second}
+		negativeDuration := metav1.Duration{Duration: -time.Second}
 
 		Context("VerticalPodAutoscaler validation", func() {
 			DescribeTable("verticalPod autoscaler values",
@@ -1954,7 +1884,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 
 		It("should forbid kubernetes version upgrades skipping a minor version", func() {
 			newShoot := prepareShootForUpdate(shoot)
-			newShoot.Spec.Kubernetes.Version = "1.10.1"
+			newShoot.Spec.Kubernetes.Version = "1.17.1"
 
 			errorList := ValidateShootUpdate(newShoot, shoot)
 
@@ -1991,42 +1921,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 		})
 
 		Context("maintenance section", func() {
-			It("should forbid not specifying the maintenance section", func() {
-				shoot.Spec.Maintenance = nil
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(HaveLen(1))
-				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeRequired),
-					"Field": Equal("spec.maintenance"),
-				}))
-			})
-
-			It("should forbid not specifying the auto update section", func() {
-				shoot.Spec.Maintenance.AutoUpdate = nil
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(HaveLen(1))
-				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeRequired),
-					"Field": Equal("spec.maintenance.autoUpdate"),
-				}))
-			})
-
-			It("should forbid not specifying the time window section", func() {
-				shoot.Spec.Maintenance.TimeWindow = nil
-
-				errorList := ValidateShoot(shoot)
-
-				Expect(errorList).To(HaveLen(1))
-				Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeRequired),
-					"Field": Equal("spec.maintenance.timeWindow"),
-				}))
-			})
-
 			It("should forbid invalid formats for the time window begin and end values", func() {
 				shoot.Spec.Maintenance.TimeWindow.Begin = "invalidformat"
 				shoot.Spec.Maintenance.TimeWindow.End = "invalidformat"
@@ -2104,7 +1998,10 @@ var _ = Describe("Shoot Validation Tests", func() {
 	})
 
 	Describe("#ValidateShootStatus, #ValidateShootStatusUpdate", func() {
-		var shoot *core.Shoot
+		var (
+			shoot    *core.Shoot
+			newShoot *core.Shoot
+		)
 		BeforeEach(func() {
 			shoot = &core.Shoot{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2114,11 +2011,12 @@ var _ = Describe("Shoot Validation Tests", func() {
 				Spec:   core.ShootSpec{},
 				Status: core.ShootStatus{},
 			}
+
+			newShoot = prepareShootForUpdate(shoot)
 		})
 
 		Context("uid checks", func() {
 			It("should allow setting the uid", func() {
-				newShoot := prepareShootForUpdate(shoot)
 				newShoot.Status.UID = types.UID("1234")
 
 				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
@@ -2127,7 +2025,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 			})
 
 			It("should forbid changing the uid", func() {
-				newShoot := prepareShootForUpdate(shoot)
 				shoot.Status.UID = types.UID("1234")
 				newShoot.Status.UID = types.UID("1235")
 
@@ -2143,7 +2040,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 
 		Context("technical id checks", func() {
 			It("should allow setting the technical id", func() {
-				newShoot := prepareShootForUpdate(shoot)
 				newShoot.Status.TechnicalID = "shoot--foo--bar"
 
 				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
@@ -2152,7 +2048,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 			})
 
 			It("should forbid changing the technical id", func() {
-				newShoot := prepareShootForUpdate(shoot)
 				shoot.Status.TechnicalID = "shoot-foo-bar"
 				newShoot.Status.TechnicalID = "shoot--foo--bar"
 
@@ -2167,16 +2062,14 @@ var _ = Describe("Shoot Validation Tests", func() {
 		})
 
 		Context("validate shoot cluster identity update", func() {
-			var clusterIdentity = "newClusterIdentity"
+			clusterIdentity := "newClusterIdentity"
 			It("should not fail to set the cluster identity if it is missing", func() {
-				newShoot := prepareShootForUpdate(shoot)
 				newShoot.Status.ClusterIdentity = &clusterIdentity
 				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
 				Expect(errorList).To(HaveLen(0))
 			})
 
 			It("should fail to set the cluster identity if it is already set", func() {
-				newShoot := prepareShootForUpdate(shoot)
 				newShoot.Status.ClusterIdentity = &clusterIdentity
 				shoot.Status.ClusterIdentity = pointer.StringPtr("oldClusterIdentity")
 				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
@@ -2186,6 +2079,135 @@ var _ = Describe("Shoot Validation Tests", func() {
 					"Field":  Equal("status.clusterIdentity"),
 					"Detail": ContainSubstring(`field is immutable`),
 				}))
+			})
+		})
+
+		Context("validate shoot advertise address update", func() {
+			It("should fail for empty name", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: ""},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeRequired),
+					"Field":  Equal("status.advertisedAddresses[0].name"),
+					"Detail": ContainSubstring(`field must not be empty`),
+				}))
+			})
+			It("should fail for duplicate name", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://foo.bar"},
+					{Name: "a", URL: "https://foo.bar"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":  Equal(field.ErrorTypeDuplicate),
+					"Field": Equal("status.advertisedAddresses[1].name"),
+				}))
+			})
+			It("should fail for invalid URL", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "://foo.bar"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeRequired),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`url must be a valid URL:`),
+				}))
+			})
+			It("should fail for http URL", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "http://foo.bar"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`'https' is the only allowed URL scheme`),
+				}))
+			})
+			It("should fail for URL without host", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`host must be provided`),
+				}))
+			})
+			It("should fail for URL with path", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://foo.bar/baz"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`path is not permitted in the URL`),
+				}))
+			})
+			It("should fail for URL with user information", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://john:doe@foo.bar"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`user information is not permitted in the URL`),
+				}))
+			})
+			It("should fail for URL with fragment", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://foo.bar#some-fragment"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`fragments are not permitted in the URL`),
+				}))
+			})
+			It("should fail for URL with query parameters", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://foo.bar?some=query"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(HaveLen(1))
+				Expect(errorList).To(ConsistOfFields(Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("status.advertisedAddresses[0].url"),
+					"Detail": ContainSubstring(`query parameters are not permitted in the URL`),
+				}))
+			})
+			It("should succeed correct addresses", func() {
+				newShoot.Status.AdvertisedAddresses = []core.ShootAdvertisedAddress{
+					{Name: "a", URL: "https://foo.bar"},
+					{Name: "b", URL: "https://foo.bar:443"},
+				}
+
+				errorList := ValidateShootStatusUpdate(newShoot.Status, shoot.Status)
+				Expect(errorList).To(BeEmpty())
 			})
 		})
 	})
@@ -2201,7 +2223,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 					MaxSurge:       &maxSurge,
 					MaxUnavailable: &maxUnavailable,
 				}
-				errList := ValidateWorker(worker, nil)
+				errList := ValidateWorker(worker, nil, false)
 
 				Expect(errList).To(matcher)
 			},
@@ -2217,15 +2239,6 @@ var _ = Describe("Shoot Validation Tests", func() {
 				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeRequired),
 					"Field": Equal("machine.type"),
-				}))),
-			),
-			Entry("missing machine image",
-				core.Machine{
-					Type: "large",
-				},
-				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
-					"Type":  Equal(field.ErrorTypeRequired),
-					"Field": Equal("machine.image"),
 				}))),
 			),
 			Entry("empty machine image name",
@@ -2270,7 +2283,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 					MaxSurge:       &maxSurge,
 					MaxUnavailable: &maxUnavailable,
 				}
-				errList := ValidateWorker(worker, nil)
+				errList := ValidateWorker(worker, nil, false)
 
 				Expect(errList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type": Equal(expectType),
@@ -2308,7 +2321,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 					MaxUnavailable: &maxUnavailable,
 					Labels:         labels,
 				}
-				errList := ValidateWorker(worker, nil)
+				errList := ValidateWorker(worker, nil, false)
 
 				Expect(errList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type": Equal(expectType),
@@ -2343,7 +2356,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 					MaxUnavailable: &maxUnavailable,
 					Annotations:    annotations,
 				}
-				errList := ValidateWorker(worker, nil)
+				errList := ValidateWorker(worker, nil, false)
 
 				Expect(errList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type": Equal(expectType),
@@ -2377,7 +2390,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 					MaxUnavailable: &maxUnavailable,
 					Taints:         taints,
 				}
-				errList := ValidateWorker(worker, nil)
+				errList := ValidateWorker(worker, nil, false)
 
 				Expect(errList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type": Equal(expectType),
@@ -2420,7 +2433,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				MaxUnavailable: &maxUnavailable,
 				DataVolumes:    dataVolumes,
 			}
-			errList := ValidateWorker(worker, nil)
+			errList := ValidateWorker(worker, nil, false)
 			Expect(errList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 				"Type":  Equal(field.ErrorTypeRequired),
 				"Field": Equal("volume"),
@@ -2447,7 +2460,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				Volume:         &vol,
 				DataVolumes:    dataVolumes,
 			}
-			errList := ValidateWorker(worker, nil)
+			errList := ValidateWorker(worker, nil, false)
 			Expect(errList).To(ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 				"Type":     Equal(field.ErrorTypeInvalid),
 				"Field":    Equal("dataVolumes[1].size"),
@@ -2476,7 +2489,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				Volume:         &vol,
 				DataVolumes:    dataVolumes,
 			}
-			errList := ValidateWorker(worker, nil)
+			errList := ValidateWorker(worker, nil, false)
 			Expect(errList).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeRequired),
@@ -2514,7 +2527,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				DataVolumes:           dataVolumes,
 				KubeletDataVolumeName: &name,
 			}
-			errList := ValidateWorker(worker, nil)
+			errList := ValidateWorker(worker, nil, false)
 			Expect(errList).To(ConsistOf())
 		})
 
@@ -2541,7 +2554,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				DataVolumes:           dataVolumes,
 				KubeletDataVolumeName: &name3,
 			}
-			errList := ValidateWorker(worker, nil)
+			errList := ValidateWorker(worker, nil, false)
 			Expect(errList).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeInvalid),
@@ -2571,7 +2584,7 @@ var _ = Describe("Shoot Validation Tests", func() {
 				Volume:         &vol,
 				DataVolumes:    dataVolumes,
 			}
-			errList := ValidateWorker(worker, nil)
+			errList := ValidateWorker(worker, nil, false)
 			Expect(errList).To(ConsistOf(
 				PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeDuplicate),
@@ -2588,7 +2601,8 @@ var _ = Describe("Shoot Validation Tests", func() {
 			func(name core.CRIName, matcher gomegatypes.GomegaMatcher) {
 				worker := core.Worker{
 					Name: "worker",
-					CRI:  &core.CRI{Name: name}}
+					CRI:  &core.CRI{Name: name},
+				}
 
 				errList := ValidateCRI(worker.CRI, field.NewPath("cri"))
 
@@ -2605,8 +2619,10 @@ var _ = Describe("Shoot Validation Tests", func() {
 		It("validate that container runtime has a type", func() {
 			worker := core.Worker{
 				Name: "worker",
-				CRI: &core.CRI{Name: core.CRINameContainerD,
-					ContainerRuntimes: []core.ContainerRuntime{{Type: "gVisor"}, {Type: ""}}},
+				CRI: &core.CRI{
+					Name:              core.CRINameContainerD,
+					ContainerRuntimes: []core.ContainerRuntime{{Type: "gVisor"}, {Type: ""}},
+				},
 			}
 
 			errList := ValidateCRI(worker.CRI, field.NewPath("cri"))
@@ -2621,8 +2637,10 @@ var _ = Describe("Shoot Validation Tests", func() {
 		It("validate duplicate container runtime types", func() {
 			worker := core.Worker{
 				Name: "worker",
-				CRI: &core.CRI{Name: core.CRINameContainerD,
-					ContainerRuntimes: []core.ContainerRuntime{{Type: "gVisor"}, {Type: "gVisor"}}},
+				CRI: &core.CRI{
+					Name:              core.CRINameContainerD,
+					ContainerRuntimes: []core.ContainerRuntime{{Type: "gVisor"}, {Type: "gVisor"}},
+				},
 			}
 
 			errList := ValidateCRI(worker.CRI, field.NewPath("cri"))
@@ -2914,6 +2932,8 @@ var _ = Describe("Shoot Validation Tests", func() {
 		})
 
 		validResourceQuantity := resource.MustParse(validResourceQuantityValueMi)
+		invalidResourceQuantity := resource.MustParse(invalidResourceQuantityValue)
+
 		DescribeTable("validate the kubelet configuration - EvictionMinimumReclaim",
 			func(memoryAvailable, imagefsAvailable, imagefsInodesFree, nodefsAvailable, nodefsInodesFree resource.Quantity, matcher gomegatypes.GomegaMatcher) {
 				kubeletConfig := core.KubeletConfig{
@@ -2932,11 +2952,12 @@ var _ = Describe("Shoot Validation Tests", func() {
 			},
 
 			Entry("valid configuration", validResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, HaveLen(0)),
-			Entry("only allow positive resource.Quantity for any value", resource.MustParse(invalidResourceQuantityValue), validResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+			Entry("only allow positive resource.Quantity for any value", invalidResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 				"Type":  Equal(field.ErrorTypeInvalid),
 				"Field": Equal(field.NewPath("evictionMinimumReclaim.memoryAvailable").String()),
 			})))),
 		)
+
 		validDuration := metav1.Duration{Duration: 2 * time.Minute}
 		invalidDuration := metav1.Duration{Duration: -2 * time.Minute}
 		DescribeTable("validate the kubelet configuration - KubeletConfigEvictionSoftGracePeriod",
@@ -2985,48 +3006,49 @@ var _ = Describe("Shoot Validation Tests", func() {
 		)
 
 		Context("validate the kubelet configuration - reserved", func() {
-
 			DescribeTable("validate the kubelet configuration - KubeReserved",
-				func(cpu, memory, epehemeralStorage, pid resource.Quantity, matcher gomegatypes.GomegaMatcher) {
+				func(cpu, memory, ephemeralStorage, pid *resource.Quantity, matcher gomegatypes.GomegaMatcher) {
 					kubeletConfig := core.KubeletConfig{
 						KubeReserved: &core.KubeletConfigReserved{
-							CPU:              &cpu,
-							Memory:           &memory,
-							EphemeralStorage: &epehemeralStorage,
-							PID:              &pid,
+							CPU:              cpu,
+							Memory:           memory,
+							EphemeralStorage: ephemeralStorage,
+							PID:              pid,
 						},
 					}
-
-					errList := ValidateKubeletConfig(kubeletConfig, nil)
-
-					Expect(errList).To(matcher)
+					Expect(ValidateKubeletConfig(kubeletConfig, nil)).To(matcher)
 				},
 
-				Entry("valid configuration", validResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, HaveLen(0)),
-				Entry("only allow positive resource.Quantity for any value", resource.MustParse(invalidResourceQuantityValue), validResourceQuantity, validResourceQuantity, validResourceQuantity, ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+				Entry("valid configuration (cpu)", &validResourceQuantity, nil, nil, nil, HaveLen(0)),
+				Entry("valid configuration (memory)", nil, &validResourceQuantity, nil, nil, HaveLen(0)),
+				Entry("valid configuration (storage)", nil, nil, &validResourceQuantity, nil, HaveLen(0)),
+				Entry("valid configuration (pid)", nil, nil, nil, &validResourceQuantity, HaveLen(0)),
+				Entry("valid configuration (all)", &validResourceQuantity, &validResourceQuantity, &validResourceQuantity, &validResourceQuantity, HaveLen(0)),
+				Entry("only allow positive resource.Quantity for any value", &invalidResourceQuantity, &validResourceQuantity, &validResourceQuantity, &validResourceQuantity, ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeInvalid),
 					"Field": Equal(field.NewPath("kubeReserved.cpu").String()),
 				})))),
 			)
 
 			DescribeTable("validate the kubelet configuration - SystemReserved",
-				func(cpu, memory, epehemeralStorage, pid resource.Quantity, matcher gomegatypes.GomegaMatcher) {
+				func(cpu, memory, ephemeralStorage, pid *resource.Quantity, matcher gomegatypes.GomegaMatcher) {
 					kubeletConfig := core.KubeletConfig{
 						SystemReserved: &core.KubeletConfigReserved{
-							CPU:              &cpu,
-							Memory:           &memory,
-							EphemeralStorage: &epehemeralStorage,
-							PID:              &pid,
+							CPU:              cpu,
+							Memory:           memory,
+							EphemeralStorage: ephemeralStorage,
+							PID:              pid,
 						},
 					}
-
-					errList := ValidateKubeletConfig(kubeletConfig, nil)
-
-					Expect(errList).To(matcher)
+					Expect(ValidateKubeletConfig(kubeletConfig, nil)).To(matcher)
 				},
 
-				Entry("valid configuration", validResourceQuantity, validResourceQuantity, validResourceQuantity, validResourceQuantity, HaveLen(0)),
-				Entry("only allow positive resource.Quantity for any value", resource.MustParse(invalidResourceQuantityValue), validResourceQuantity, validResourceQuantity, validResourceQuantity, ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+				Entry("valid configuration (cpu)", &validResourceQuantity, nil, nil, nil, HaveLen(0)),
+				Entry("valid configuration (memory)", nil, &validResourceQuantity, nil, nil, HaveLen(0)),
+				Entry("valid configuration (storage)", nil, nil, &validResourceQuantity, nil, HaveLen(0)),
+				Entry("valid configuration (pid)", nil, nil, nil, &validResourceQuantity, HaveLen(0)),
+				Entry("valid configuration (all)", &validResourceQuantity, &validResourceQuantity, &validResourceQuantity, &validResourceQuantity, HaveLen(0)),
+				Entry("only allow positive resource.Quantity for any value", &invalidResourceQuantity, &validResourceQuantity, &validResourceQuantity, &validResourceQuantity, ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
 					"Type":  Equal(field.ErrorTypeInvalid),
 					"Field": Equal(field.NewPath("systemReserved.cpu").String()),
 				})))),

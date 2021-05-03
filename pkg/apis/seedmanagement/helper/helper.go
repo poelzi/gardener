@@ -15,14 +15,16 @@
 package helper
 
 import (
+	"bytes"
 	"fmt"
 
-	gardencore "github.com/gardener/gardener/pkg/apis/core"
-	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	"github.com/gardener/gardener/pkg/apis/core"
+	corev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/apis/seedmanagement"
 	"github.com/gardener/gardener/pkg/gardenlet/apis/config"
 	configv1alpha1 "github.com/gardener/gardener/pkg/gardenlet/apis/config/v1alpha1"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/versioning"
@@ -33,83 +35,58 @@ var scheme *runtime.Scheme
 
 func init() {
 	scheme = runtime.NewScheme()
+	// core schemes are needed here to properly decode the embedded SeedTemplate objects
+	utilruntime.Must(core.AddToScheme(scheme))
+	utilruntime.Must(corev1beta1.AddToScheme(scheme))
 	utilruntime.Must(config.AddToScheme(scheme))
 	utilruntime.Must(configv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(gardencore.AddToScheme(scheme))
-	utilruntime.Must(gardencorev1beta1.AddToScheme(scheme))
 }
 
-// DecodeGardenletConfig decodes the given raw extension into an internal GardenletConfiguration version.
-func DecodeGardenletConfig(rawConfig *runtime.RawExtension, withDefaults bool) (*config.GardenletConfiguration, error) {
-	cfg, err := DecodeGardenletConfigExternal(rawConfig, withDefaults)
-	if err != nil {
-		return nil, err
-	}
-	return ConvertGardenletConfig(cfg)
-}
-
-// DecodeGardenletConfig decodes the given raw extension into an external GardenletConfiguration version.
-func DecodeGardenletConfigExternal(rawConfig *runtime.RawExtension, withDefaults bool) (*configv1alpha1.GardenletConfiguration, error) {
+// DecodeGardenletConfiguration decodes the given raw extension into an external GardenletConfiguration version.
+func DecodeGardenletConfiguration(rawConfig *runtime.RawExtension, withDefaults bool) (*configv1alpha1.GardenletConfiguration, error) {
 	if cfg, ok := rawConfig.Object.(*configv1alpha1.GardenletConfiguration); ok {
 		return cfg, nil
 	}
-	cfg := &configv1alpha1.GardenletConfiguration{}
-	if _, _, err := getDecoder(withDefaults).Decode(rawConfig.Raw, nil, cfg); err != nil {
+	return DecodeGardenletConfigurationFromBytes(rawConfig.Raw, withDefaults)
+}
+
+// DecodeGardenletConfigurationFromBytes decodes the given byte slice into an external GardenletConfiguration version.
+func DecodeGardenletConfigurationFromBytes(bytes []byte, withDefaults bool) (*configv1alpha1.GardenletConfiguration, error) {
+	cfg := &configv1alpha1.GardenletConfiguration{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: configv1alpha1.SchemeGroupVersion.String(),
+			Kind:       "GardenletConfiguration",
+		},
+	}
+	if _, _, err := getDecoder(withDefaults).Decode(bytes, nil, cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// ConvertGardenletConfig converts the given object to an internal GardenletConfiguration version.
-func ConvertGardenletConfig(obj runtime.Object) (*config.GardenletConfiguration, error) {
-	obj, err := scheme.ConvertToVersion(obj, config.SchemeGroupVersion)
+// EncodeGardenletConfiguration encodes the given external GardenletConfiguration version into a raw extension.
+func EncodeGardenletConfiguration(cfg *configv1alpha1.GardenletConfiguration) (*runtime.RawExtension, error) {
+	raw, err := EncodeGardenletConfigurationToBytes(cfg)
 	if err != nil {
 		return nil, err
 	}
-	result, ok := obj.(*config.GardenletConfiguration)
-	if !ok {
-		return nil, fmt.Errorf("could not convert GardenletConfiguration to internal version")
-	}
-	return result, nil
+	return &runtime.RawExtension{
+		Raw:    raw,
+		Object: cfg,
+	}, nil
 }
 
-// ConvertGardenletConfigExternal converts the given object to an external  GardenletConfiguration version.
-func ConvertGardenletConfigExternal(obj runtime.Object) (*configv1alpha1.GardenletConfiguration, error) {
-	obj, err := scheme.ConvertToVersion(obj, configv1alpha1.SchemeGroupVersion)
+// EncodeGardenletConfigurationToBytes encodes the given external GardenletConfiguration version into a byte slice.
+func EncodeGardenletConfigurationToBytes(cfg *configv1alpha1.GardenletConfiguration) ([]byte, error) {
+	encoder, err := getEncoder(configv1alpha1.SchemeGroupVersion, runtime.ContentTypeJSON)
 	if err != nil {
 		return nil, err
 	}
-	result, ok := obj.(*configv1alpha1.GardenletConfiguration)
-	if !ok {
-		return nil, fmt.Errorf("could not convert GardenletConfiguration to version %s", configv1alpha1.SchemeGroupVersion.String())
-	}
-	return result, nil
-}
-
-// ConvertSeed converts the given external Seed version to an internal version.
-func ConvertSeed(obj runtime.Object) (*gardencore.Seed, error) {
-	obj, err := scheme.ConvertToVersion(obj, gardencore.SchemeGroupVersion)
-	if err != nil {
+	var b bytes.Buffer
+	if err := encoder.Encode(cfg, &b); err != nil {
 		return nil, err
 	}
-	result, ok := obj.(*gardencore.Seed)
-	if !ok {
-		return nil, fmt.Errorf("could not convert Seed to internal version")
-	}
-	return result, nil
-}
-
-// ConvertSeedExternal converts the given internal Seed version to an external version.
-func ConvertSeedExternal(obj runtime.Object) (*gardencorev1beta1.Seed, error) {
-	obj, err := scheme.ConvertToVersion(obj, gardencorev1beta1.SchemeGroupVersion)
-	if err != nil {
-		return nil, err
-	}
-	result, ok := obj.(*gardencorev1beta1.Seed)
-	if !ok {
-		return nil, fmt.Errorf("could not convert Seed to version %s", gardencorev1beta1.SchemeGroupVersion.String())
-	}
-	return result, nil
+	return b.Bytes(), nil
 }
 
 func getDecoder(withDefaulter bool) runtime.Decoder {
@@ -119,6 +96,15 @@ func getDecoder(withDefaulter bool) runtime.Decoder {
 	return versioning.NewCodec(nil, serializer.NewCodecFactory(scheme).UniversalDeserializer(), runtime.UnsafeObjectConvertor(scheme),
 		scheme, scheme, nil, runtime.DisabledGroupVersioner, runtime.InternalGroupVersioner, scheme.Name())
 
+}
+
+func getEncoder(gv runtime.GroupVersioner, mediaType string) (runtime.Encoder, error) {
+	codec := serializer.NewCodecFactory(scheme)
+	si, ok := runtime.SerializerInfoForMediaType(codec.SupportedMediaTypes(), mediaType)
+	if !ok {
+		return nil, fmt.Errorf("could not find encoder for media type %q", runtime.ContentTypeJSON)
+	}
+	return codec.EncoderForVersion(si.Serializer, gv), nil
 }
 
 // GetBootstrap returns the value of the given Bootstrap, or None if nil.

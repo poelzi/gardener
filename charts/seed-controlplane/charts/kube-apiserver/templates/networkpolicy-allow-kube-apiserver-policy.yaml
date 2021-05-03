@@ -25,14 +25,32 @@ spec:
       port: {{ .Values.etcdServicePort }}
   {{- if .Values.konnectivityTunnel.enabled }}
   - to:
-    # Allow connections from the apiserver pod to itself (i.e., konnectivity-server to apiserver)
     - podSelector:
         matchLabels:
+  {{- if .Values.sni.enabled }}
+          # Allow connections from the apiserver pod to the konnectivity-server.
+          app: konnectivity-server
+    ports:
+    - protocol: TCP
+      port: {{ required ".konnectivityTunnel.serverPort is required" .Values.konnectivityTunnel.serverPort }}
+  {{- else }}
+          # Allow connections from the apiserver pod to itself (i.e., konnectivity-server to apiserver)
           role: apiserver
           garden.sapcloud.io/role: controlplane
     ports:
-      - protocol: TCP
-        port: {{ required ".securePort is required" .Values.securePort }}
+    - protocol: TCP
+      port: {{ required ".securePort is required" .Values.securePort }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.reversedVPN.enabled }}
+  - to:
+    - podSelector:
+        matchLabels:
+          gardener.cloud/role: controlplane
+          app: vpn-seed-server
+    ports:
+    - protocol: TCP
+      port: 9443
   {{- end }}
   ingress:
     # Allow connection from everything which needs to talk to the API server
@@ -45,7 +63,7 @@ spec:
     ports:
     - protocol: TCP
       port: {{ required ".securePort is required" .Values.securePort }}
-    {{- if .Values.konnectivityTunnel.enabled }}
+    {{- if and .Values.konnectivityTunnel.enabled (not .Values.sni.enabled) }}
     - protocol: TCP
       port: {{ required ".konnectivityTunnel.agentPort is required" .Values.konnectivityTunnel.agentPort }}
     {{- end }}
@@ -55,7 +73,7 @@ spec:
           app: prometheus
           garden.sapcloud.io/role: monitoring
           role: monitoring
-    {{- if .Values.konnectivityTunnel.enabled }}
+    {{- if and .Values.konnectivityTunnel.enabled (not .Values.sni.enabled) }}
     # Allow connections from the apiserver pod to itself (i.e., konnectivity-server to apiserver)
     - podSelector:
         matchLabels:

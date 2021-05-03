@@ -22,7 +22,7 @@ import (
 	"time"
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
-	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/konnectivity"
 	"github.com/gardener/gardener/pkg/operation/common"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/retry"
@@ -34,7 +34,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/utils/pointer"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // WaitUntilNginxIngressServiceIsReady waits until the external load balancer of the nginx ingress controller has been created.
@@ -79,7 +78,7 @@ func (b *Botanist) WaitUntilKubeAPIServerReady(ctx context.Context) error {
 	deployment := &appsv1.Deployment{}
 
 	if err := retry.UntilTimeout(ctx, 5*time.Second, 300*time.Second, func(ctx context.Context) (done bool, err error) {
-		if err := b.K8sSeedClient.DirectClient().Get(ctx, kutil.Key(b.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeAPIServer), deployment); err != nil {
+		if err := b.K8sSeedClient.APIReader().Get(ctx, kutil.Key(b.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeAPIServer), deployment); err != nil {
 			return retry.SevereError(err)
 		}
 		if deployment.Generation != deployment.Status.ObservedGeneration {
@@ -110,7 +109,7 @@ func (b *Botanist) WaitUntilKubeAPIServerReady(ctx context.Context) error {
 			return err
 		}
 
-		newestPod, err2 := kutil.NewestPodForDeployment(ctx, b.K8sSeedClient.DirectClient(), deployment)
+		newestPod, err2 := kutil.NewestPodForDeployment(ctx, b.K8sSeedClient.APIReader(), deployment)
 		if err2 != nil {
 			return errorspkg.Wrapf(err, "failure to find the newest pod for deployment to read the logs: %s", err2.Error())
 		}
@@ -124,7 +123,7 @@ func (b *Botanist) WaitUntilKubeAPIServerReady(ctx context.Context) error {
 		}
 
 		errWithLogs := fmt.Errorf("%s, logs of newest pod:\n%s", err.Error(), logs)
-		return gardencorev1beta1helper.DetermineError(errWithLogs, errWithLogs.Error())
+		return errWithLogs
 	}
 
 	return nil
@@ -136,7 +135,7 @@ func (b *Botanist) WaitUntilTunnelConnectionExists(ctx context.Context) error {
 	return retry.UntilTimeout(ctx, 5*time.Second, 900*time.Second, func(ctx context.Context) (done bool, err error) {
 		tunnelName := common.VPNTunnel
 		if b.Shoot.KonnectivityTunnelEnabled {
-			tunnelName = common.KonnectivityTunnel
+			tunnelName = konnectivity.AgentName
 		}
 
 		return b.CheckTunnelConnection(ctx, b.Logger, tunnelName)
@@ -246,30 +245,5 @@ func (b *Botanist) WaitUntilRequiredExtensionsReady(ctx context.Context) error {
 			return retry.MinorError(err)
 		}
 		return retry.Ok()
-	})
-}
-
-// WaitUntilDeploymentScaledToDesiredReplicas waits for the number of available replicas to be equal to the deployment's desired replicas count.
-func WaitUntilDeploymentScaledToDesiredReplicas(ctx context.Context, client client.Client, namespace, name string, desiredReplicas int32) error {
-	return retry.UntilTimeout(ctx, 5*time.Second, 300*time.Second, func(ctx context.Context) (done bool, err error) {
-		deployment := &appsv1.Deployment{}
-		if err := client.Get(ctx, kutil.Key(namespace, name), deployment); err != nil {
-			return retry.SevereError(err)
-		}
-
-		if deployment.Generation != deployment.Status.ObservedGeneration {
-			return retry.MinorError(fmt.Errorf("%q not observed at latest generation (%d/%d)", name,
-				deployment.Status.ObservedGeneration, deployment.Generation))
-		}
-
-		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != desiredReplicas {
-			return retry.SevereError(fmt.Errorf("waiting for deployment %q to scale failed. spec.replicas does not match the desired replicas", name))
-		}
-
-		if deployment.Status.Replicas == desiredReplicas && deployment.Status.AvailableReplicas == desiredReplicas {
-			return retry.Ok()
-		}
-
-		return retry.MinorError(fmt.Errorf("deployment %q currently has '%d' replicas. Desired: %d", name, deployment.Status.AvailableReplicas, desiredReplicas))
 	})
 }

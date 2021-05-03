@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -36,7 +35,6 @@ import (
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
-	"github.com/gardener/gardener/pkg/utils/retry"
 )
 
 const (
@@ -128,17 +126,24 @@ func New(
 	}
 }
 
+const (
+	// CommandApply is a constant for the "apply" command.
+	CommandApply = "apply"
+	// CommandDestroy is a constant for the "destroy" command.
+	CommandDestroy = "destroy"
+)
+
 // Apply executes a Terraform Pod by running the 'terraform apply' command.
 func (t *terraformer) Apply(ctx context.Context) error {
-	if !t.configurationDefined {
+	if !t.configurationInitialized {
 		return errors.New("terraformer configuration has not been defined, cannot execute Terraformer")
 	}
-	return t.execute(ctx, "apply")
+	return t.execute(ctx, CommandApply)
 }
 
 // Destroy executes a Terraform Pod by running the 'terraform destroy' command.
 func (t *terraformer) Destroy(ctx context.Context) error {
-	if err := t.execute(ctx, "destroy"); err != nil {
+	if err := t.execute(ctx, CommandDestroy); err != nil {
 		return err
 	}
 	return t.CleanupConfiguration(ctx)
@@ -149,31 +154,29 @@ func (t *terraformer) Destroy(ctx context.Context) error {
 func (t *terraformer) execute(ctx context.Context, command string) error {
 	logger := t.logger.WithValues("command", command)
 
-	var allConfigurationResourcesExist = false
-	logger.V(1).Info("Waiting until all configuration resources exist")
-
-	// We should retry the preparation check in order to allow the kube-apiserver to actually create the ConfigMaps.
-	if err := retry.UntilTimeout(ctx, 5*time.Second, 30*time.Second, func(ctx context.Context) (done bool, err error) {
+	// When not both configuration and state were freshly initialized then we should check whether all configuration
+	// resources still exist. If yes then we can safely continue. If nothing exists then we exit early and don't run the
+	// pod. Otherwise, we might return an error in case we don't tolerate that resources are missing. We only tolerate
+	// this when the command is 'destroy'. This is because the CleanupConfiguration() function could have already
+	// deleted some of the resources (but not all). Hence, without the toleration we would end up in a deadlock and
+	// manual action would be required.
+	if !(t.configurationInitialized && t.stateInitialized) {
 		numberOfExistingResources, err := t.NumberOfResources(ctx)
 		if err != nil {
-			return retry.SevereError(err)
+			return err
 		}
-		if numberOfExistingResources == 0 {
-			logger.Info("All ConfigMaps and Secrets missing, can not execute Terraformer pod")
-			return retry.Ok()
-		} else if numberOfExistingResources == numberOfConfigResources {
+
+		switch {
+		case numberOfExistingResources == numberOfConfigResources:
 			logger.Info("All ConfigMaps and Secrets exist, will execute Terraformer pod")
-			allConfigurationResourcesExist = true
-			return retry.Ok()
-		} else {
-			logger.Error(fmt.Errorf("ConfigMaps or Secrets are missing"), "Cannot execute Terraformer pod")
-			return retry.MinorError(fmt.Errorf("%d/%d Terraform resources are missing", numberOfConfigResources-numberOfExistingResources, numberOfConfigResources))
+		case numberOfExistingResources == 0:
+			logger.Info("All ConfigMaps and Secrets missing, can not execute Terraformer pod")
+			return nil
+		case command != CommandDestroy:
+			errResourcesMissing := fmt.Errorf("%d/%d Terraform resources are missing", numberOfConfigResources-numberOfExistingResources, numberOfConfigResources)
+			logger.Error(errResourcesMissing, "Cannot execute Terraformer pod")
+			return errResourcesMissing
 		}
-	}); err != nil {
-		return err
-	}
-	if !allConfigurationResourcesExist {
-		return nil
 	}
 
 	// Check if an existing Terraformer pod is still running. If yes, then adopt it. If no, then deploy a new pod (if
@@ -214,7 +217,7 @@ func (t *terraformer) execute(ctx context.Context, command string) error {
 	// something at all. If it does not contain anything, then the 'apply' could never be executed, probably
 	// because of syntax errors. In this case, we want to skip the Terraform destroy pod (as it wouldn't do anything
 	// anyway) and just delete the related ConfigMaps/Secrets.
-	if command == "destroy" {
+	if command == CommandDestroy {
 		deployNewPod = !t.IsStateEmpty(ctx)
 	}
 
@@ -227,10 +230,12 @@ func (t *terraformer) execute(ctx context.Context, command string) error {
 		if err != nil {
 			return fmt.Errorf("failed to deploy the Terraformer pod with .meta.generateName %q: %w", generateName, err)
 		}
-		logger.Info("Successfully created Terraformer pod", "pod", kutil.KeyFromObject(pod))
+		logger.Info("Successfully created Terraformer pod", "pod", client.ObjectKeyFromObject(pod))
 	}
 
 	if pod != nil {
+		podLogger := logger.WithValues("pod", client.ObjectKey{Namespace: t.namespace, Name: pod.Name})
+
 		// TODO: remove after several releases
 		// ensure ownerRef for already existing state configmaps
 		if err := t.ensureStateHasOwnerRef(ctx); err != nil {
@@ -238,35 +243,36 @@ func (t *terraformer) execute(ctx context.Context, command string) error {
 		}
 
 		// Wait for the Terraform apply/destroy Pod to be completed
-		exitCode := t.waitForPod(ctx, logger, pod, t.deadlinePod)
+		exitCode, terminationMessage := t.waitForPod(ctx, logger, pod, t.deadlinePod)
 		succeeded := exitCode == 0
 		if succeeded {
-			logger.Info("Terraformer pod finished successfully")
+			podLogger.Info("Terraformer pod finished successfully")
 		} else {
-			logger.Info("Terraformer pod finished with error", "exitCode", exitCode)
+			podLogger.Info("Terraformer pod finished with error", "exitCode", exitCode)
+
+			if terminationMessage != "" {
+				podLogger.V(1).Info("Termination message of Terraformer pod: " + terminationMessage)
+			} else {
+				// fall back to pod logs as termination message
+				podLogger.V(1).Info("Fetching logs of Terraformer pod as termination message is empty")
+				terminationMessage, err = t.retrievePodLogs(ctx, podLogger, pod)
+				if err != nil {
+					podLogger.Error(err, "Could not retrieve logs of Terraformer pod")
+					return err
+				}
+				podLogger.V(1).Info("Logs of Terraformer pod: " + terminationMessage)
+			}
 		}
 
-		// Retrieve the logs of the pod
-		logger.V(1).Info("Fetching the logs for Terraformer pod")
-		logs, err := t.retrievePodLogs(ctx, logger, pod)
-		if err != nil {
-			logger.Error(err, "Could not retrieve the logs of the Terraformer pod")
-			return err
-		}
-		logger.V(1).Info("Logs of Terraformer pod: "+logs, "pod", client.ObjectKey{Namespace: t.namespace, Name: pod.Name})
-
-		// Delete the Terraformer Pod
-		logger.Info("Cleaning up Terraformer pod")
+		podLogger.Info("Cleaning up Terraformer pod")
 		if err := t.client.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
 			return err
 		}
 
-		// Evaluate whether the execution was successful or not
-		logger.Info("Terraformer execution has been completed")
 		if !succeeded {
-			errorMessage := fmt.Sprintf("Terraform execution for command '%s' could not be completed.", command)
-			if terraformErrors := retrieveTerraformErrors(pod.Name, logs); terraformErrors != nil {
-				errorMessage += fmt.Sprintf(" The following issues have been found in the logs:\n\n%s", strings.Join(terraformErrors, "\n\n"))
+			errorMessage := fmt.Sprintf("Terraform execution for command '%s' could not be completed", command)
+			if terraformErrors := findTerraformErrors(terminationMessage); terraformErrors != "" {
+				errorMessage += fmt.Sprintf(":\n\n%s", terraformErrors)
 			}
 			return gardencorev1beta1helper.DetermineError(errors.New(errorMessage), errorMessage)
 		}
@@ -384,7 +390,8 @@ func (t *terraformer) deployTerraformerPod(ctx context.Context, generateName, co
 						corev1.ResourceMemory: resource.MustParse("1.5Gi"),
 					},
 				},
-				Env: t.env(),
+				Env:                    t.env(),
+				TerminationMessagePath: "/terraform-termination-log",
 			}},
 			RestartPolicy:                 corev1.RestartPolicyNever,
 			ServiceAccountName:            name,
@@ -466,7 +473,7 @@ func (t *terraformer) retrievePodLogs(ctx context.Context, logger logr.Logger, p
 
 	logs, err := kubernetes.GetPodLogs(ctx, t.coreV1Client.Pods(pod.Namespace), pod.Name, &corev1.PodLogOptions{})
 	if err != nil {
-		logger.Error(err, "Could not retrieve the logs of Terraformer pod", "pod", kutil.KeyFromObject(pod))
+		logger.Error(err, "Could not retrieve the logs of Terraformer pod", "pod", client.ObjectKeyFromObject(pod))
 		return "", err
 	}
 

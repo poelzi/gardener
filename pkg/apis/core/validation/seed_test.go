@@ -18,8 +18,10 @@ import (
 	"strings"
 
 	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
+	gomegatypes "github.com/onsi/gomega/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,74 +34,110 @@ import (
 )
 
 var _ = Describe("Seed Validation Tests", func() {
-	Describe("#ValidateSeed, #ValidateSeedUpdate", func() {
-		var (
-			seed   *core.Seed
-			backup *core.SeedBackup
-		)
+	var (
+		seed         *core.Seed
+		seedTemplate *core.SeedTemplate
+		backup       *core.SeedBackup
+	)
 
-		BeforeEach(func() {
-			region := "some-region"
-			pods := "10.240.0.0/16"
-			services := "10.241.0.0/16"
-			nodesCIDR := "10.250.0.0/16"
-			seed = &core.Seed{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "seed-1",
+	BeforeEach(func() {
+		region := "some-region"
+		pods := "10.240.0.0/16"
+		services := "10.241.0.0/16"
+		nodesCIDR := "10.250.0.0/16"
+		seed = &core.Seed{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "seed-1",
+			},
+			Spec: core.SeedSpec{
+				Provider: core.SeedProvider{
+					Type:   "foo",
+					Region: "eu-west-1",
 				},
-				Spec: core.SeedSpec{
-					Provider: core.SeedProvider{
-						Type:   "foo",
-						Region: "eu-west-1",
+				DNS: core.SeedDNS{
+					IngressDomain: pointer.StringPtr("ingress.my-seed-1.example.com"),
+				},
+				SecretRef: &corev1.SecretReference{
+					Name:      "seed-foo",
+					Namespace: "garden",
+				},
+				Taints: []core.SeedTaint{
+					{Key: "foo"},
+				},
+				Networks: core.SeedNetworks{
+					Nodes:    &nodesCIDR,
+					Pods:     "100.96.0.0/11",
+					Services: "100.64.0.0/13",
+					ShootDefaults: &core.ShootNetworks{
+						Pods:     &pods,
+						Services: &services,
 					},
-					DNS: core.SeedDNS{
-						IngressDomain: pointer.StringPtr("ingress.my-seed-1.example.com"),
-					},
-					SecretRef: &corev1.SecretReference{
-						Name:      "seed-foo",
+				},
+				Backup: &core.SeedBackup{
+					Provider: "foo",
+					Region:   &region,
+					SecretRef: corev1.SecretReference{
+						Name:      "backup-foo",
 						Namespace: "garden",
 					},
-					Taints: []core.SeedTaint{
-						{Key: "foo"},
-					},
-					Networks: core.SeedNetworks{
-						Nodes:    &nodesCIDR,
-						Pods:     "100.96.0.0/11",
-						Services: "100.64.0.0/13",
-						ShootDefaults: &core.ShootNetworks{
-							Pods:     &pods,
-							Services: &services,
-						},
-					},
-					Backup: &core.SeedBackup{
-						Provider: "foo",
-						Region:   &region,
-						SecretRef: corev1.SecretReference{
-							Name:      "backup-foo",
-							Namespace: "garden",
-						},
-					},
 				},
-			}
-		})
+			},
+		}
+		seedTemplate = &core.SeedTemplate{
+			ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{
+					"foo": "bar",
+				},
+			},
+			Spec: seed.Spec,
+		}
+	})
 
+	Describe("#ValidateSeed, #ValidateSeedUpdate", func() {
 		It("should not return any errors", func() {
 			errorList := ValidateSeed(seed)
 
 			Expect(errorList).To(HaveLen(0))
 		})
 
-		It("should forbid Seed resources with empty metadata", func() {
-			seed.ObjectMeta = metav1.ObjectMeta{}
+		DescribeTable("Seed metadata",
+			func(objectMeta metav1.ObjectMeta, matcher gomegatypes.GomegaMatcher) {
+				seed.ObjectMeta = objectMeta
 
-			errorList := ValidateSeed(seed)
+				errorList := ValidateSeed(seed)
 
-			Expect(errorList).To(HaveLen(1))
-			Expect(*errorList[0]).To(MatchFields(IgnoreExtras, Fields{
-				"Type":  Equal(field.ErrorTypeRequired),
-				"Field": Equal("metadata.name"),
-			}))
-		})
+				Expect(errorList).To(matcher)
+			},
+
+			Entry("should forbid Seed with empty metadata",
+				metav1.ObjectMeta{},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+			Entry("should forbid Seed with empty name",
+				metav1.ObjectMeta{Name: ""},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeRequired),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+			Entry("should forbid Seed with '.' in the name (not a DNS-1123 label compliant name)",
+				metav1.ObjectMeta{Name: "seed.test"},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+			Entry("should forbid Seed with '_' in the name (not a DNS-1123 subdomain)",
+				metav1.ObjectMeta{Name: "seed_test"},
+				ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.name"),
+				}))),
+			),
+		)
 
 		It("should forbid Seed specification with empty or invalid keys", func() {
 			invalidCIDR := "invalid-cidr"
@@ -275,6 +313,85 @@ var _ = Describe("Seed Validation Tests", func() {
 				"Type":   Equal(field.ErrorTypeInvalid),
 				"Field":  Equal("spec.networks.shootDefaults.services"),
 				"Detail": Equal(`must not be a subset of "spec.networks.pods" ("10.0.1.0/24")`),
+			}))
+		})
+
+		It("should forbid Seed with overlap to default vpn range (subset)", func() {
+			shootDefaultPodCIDR := "192.168.123.128/28"     // 192.168.123.128 -> 192.168.123.143
+			shootDefaultServiceCIDR := "192.168.123.200/32" // 192.168.123.200 -> 192.168.123.200
+
+			nodesCIDR := "192.168.123.0/27" // 192.168.123.0 -> 192.168.123.31
+			// Nodes network overlaps with default vpn range
+			// Pods CIDR overlaps with default vpn range
+			// Services CIDR overlaps with default vpn range
+			// Shoot default pod CIDR overlaps with default vpn range
+			// Shoot default service CIDR overlaps with default vpn range
+			seed.Spec.Networks = core.SeedNetworks{
+				Nodes:    &nodesCIDR,          // 192.168.123.0  -> 192.168.123.31
+				Pods:     "192.168.123.32/30", // 192.168.123.32 -> 192.168.123.35
+				Services: "192.168.123.64/26", // 192.168.123.64 -> 192.168.123.127
+				ShootDefaults: &core.ShootNetworks{
+					Pods:     &shootDefaultPodCIDR,     // 192.168.123.128 -> 192.168.123.143
+					Services: &shootDefaultServiceCIDR, // 192.168.123.200 -> 192.168.123.200
+				},
+			}
+
+			errorList := ValidateSeed(seed)
+
+			Expect(errorList).To(ConsistOfFields(Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("spec.networks.pods"),
+				"Detail": Equal(`must not be a subset of "[]" ("192.168.123.0/24")`),
+			}, Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("spec.networks.services"),
+				"Detail": Equal(`must not be a subset of "[]" ("192.168.123.0/24")`),
+			}, Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("spec.networks.nodes"),
+				"Detail": Equal(`must not be a subset of "[]" ("192.168.123.0/24")`),
+			}, Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("spec.networks.shootDefaults.pods"),
+				"Detail": Equal(`must not be a subset of "[]" ("192.168.123.0/24")`),
+			}, Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("spec.networks.shootDefaults.services"),
+				"Detail": Equal(`must not be a subset of "[]" ("192.168.123.0/24")`),
+			}, Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("[]"),
+				"Detail": Equal(`must not be a subset of "spec.networks.nodes" ("192.168.123.0/27")`),
+			}))
+		})
+
+		It("should forbid Seed with overlap to default vpn range (equality)", func() {
+			// Services CIDR overlaps with default vpn range
+			seed.Spec.Networks.Services = "192.168.123.0/24" // 192.168.123.0 -> 192.168.123.255
+
+			errorList := ValidateSeed(seed)
+
+			Expect(errorList).To(ConsistOfFields(Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("spec.networks.services"),
+				"Detail": Equal(`must not be a subset of "[]" ("192.168.123.0/24")`),
+			}, Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("[]"),
+				"Detail": Equal(`must not be a subset of "spec.networks.services" ("192.168.123.0/24")`),
+			}))
+		})
+
+		It("should forbid Seed with overlap to default vpn range (superset)", func() {
+			// Pods CIDR overlaps with default vpn range
+			seed.Spec.Networks.Pods = "192.168.0.0/16" // 192.168.0.0 -> 192.168.255.255
+
+			errorList := ValidateSeed(seed)
+
+			Expect(errorList).To(ConsistOfFields(Fields{
+				"Type":   Equal(field.ErrorTypeInvalid),
+				"Field":  Equal("[]"),
+				"Detail": Equal(`must not be a subset of "spec.networks.pods" ("192.168.0.0/16")`),
 			}))
 		})
 
@@ -652,6 +769,60 @@ var _ = Describe("Seed Validation Tests", func() {
 				allErrs := ValidateSeedStatusUpdate(newSeed, oldSeed)
 				Expect(allErrs).To(BeEmpty())
 			})
+		})
+	})
+
+	Describe("#ValidateSeedTemplate", func() {
+		It("should allow valid resources", func() {
+			errorList := ValidateSeedTemplate(seedTemplate, nil)
+
+			Expect(errorList).To(HaveLen(0))
+		})
+
+		It("should forbid invalid metadata or spec fields", func() {
+			seedTemplate.Labels = map[string]string{"foo!": "bar"}
+			seedTemplate.Annotations = map[string]string{"foo!": "bar"}
+			seedTemplate.Spec.Networks.Nodes = pointer.StringPtr("")
+
+			errorList := ValidateSeedTemplate(seedTemplate, nil)
+
+			Expect(errorList).To(ConsistOf(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.labels"),
+				})),
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("metadata.annotations"),
+				})),
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":  Equal(field.ErrorTypeInvalid),
+					"Field": Equal("spec.networks.nodes"),
+				})),
+			))
+		})
+	})
+
+	Describe("#ValidateSeedTemplateUpdate", func() {
+		It("should allow valid updates", func() {
+			errorList := ValidateSeedTemplateUpdate(seedTemplate, seedTemplate, nil)
+
+			Expect(errorList).To(HaveLen(0))
+		})
+
+		It("should forbid changes to immutable fields in spec", func() {
+			newSeedTemplate := *seedTemplate
+			newSeedTemplate.Spec.Networks.Pods = "100.97.0.0/11"
+
+			errorList := ValidateSeedTemplateUpdate(&newSeedTemplate, seedTemplate, nil)
+
+			Expect(errorList).To(ConsistOf(
+				PointTo(MatchFields(IgnoreExtras, Fields{
+					"Type":   Equal(field.ErrorTypeInvalid),
+					"Field":  Equal("spec.networks.pods"),
+					"Detail": Equal("field is immutable"),
+				})),
+			))
 		})
 	})
 })

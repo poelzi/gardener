@@ -25,16 +25,15 @@ import (
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
-	kretry "k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
@@ -139,15 +138,16 @@ func (a *actuator) Delete(ctx context.Context) error {
 // reportBackupBucketProgress will update the phase and error in the BackupBucket manifest `status` section
 // by the current progress of the Flow execution.
 func (a *actuator) reportBackupBucketProgress(ctx context.Context, stats *flow.Stats) {
-	if err := kutil.TryUpdateStatus(ctx, kretry.DefaultBackoff, a.gardenClient.DirectClient(), a.backupBucket, func() error {
-		if a.backupBucket.Status.LastOperation == nil {
-			return fmt.Errorf("last operation of BackupBucket %s/%s is unset", a.backupBucket.Namespace, a.backupBucket.Name)
-		}
-		a.backupBucket.Status.LastOperation.Description = makeDescription(stats)
-		a.backupBucket.Status.LastOperation.Progress = stats.ProgressPercent()
-		a.backupBucket.Status.LastOperation.LastUpdateTime = metav1.Now()
-		return nil
-	}); err != nil {
+	patch := client.MergeFrom(a.backupBucket.DeepCopy())
+
+	if a.backupBucket.Status.LastOperation == nil {
+		a.backupBucket.Status.LastOperation = &gardencorev1beta1.LastOperation{}
+	}
+	a.backupBucket.Status.LastOperation.Description = makeDescription(stats)
+	a.backupBucket.Status.LastOperation.Progress = stats.ProgressPercent()
+	a.backupBucket.Status.LastOperation.LastUpdateTime = metav1.Now()
+
+	if err := a.gardenClient.Client().Status().Patch(ctx, a.backupBucket, patch); err != nil {
 		a.logger.Warnf("could not report backupbucket progress with description: %s: %v", makeDescription(stats), err)
 	}
 }
@@ -169,7 +169,7 @@ func (a *actuator) emptyExtensionSecret() *corev1.Secret {
 }
 
 func (a *actuator) deployBackupBucketExtensionSecret(ctx context.Context) error {
-	coreSecret, err := common.GetSecretFromSecretRef(ctx, a.gardenClient.Client(), &a.backupBucket.Spec.SecretRef)
+	coreSecret, err := kutil.GetSecretByReference(ctx, a.gardenClient.Client(), &a.backupBucket.Spec.SecretRef)
 	if err != nil {
 		return err
 	}
@@ -217,7 +217,7 @@ func (a *actuator) deployBackupBucketExtension(ctx context.Context) error {
 // waitUntilBackupBucketExtensionReconciled waits until BackupBucket Extension resource reconciled from seed.
 // It also copies the generatedSecret from seed to garden.
 func (a *actuator) waitUntilBackupBucketExtensionReconciled(ctx context.Context) error {
-	return common.WaitUntilExtensionCRReady(
+	return extensions.WaitUntilExtensionCRReady(
 		ctx,
 		a.seedClient.DirectClient(),
 		a.logger,
@@ -228,7 +228,7 @@ func (a *actuator) waitUntilBackupBucketExtensionReconciled(ctx context.Context)
 		defaultInterval,
 		defaultSevereThreshold,
 		defaultTimeout,
-		func(obj runtime.Object) error {
+		func(obj client.Object) error {
 			backupBucket, ok := obj.(*extensionsv1alpha1.BackupBucket)
 			if !ok {
 				return fmt.Errorf("expected extensionsv1alpha1.BackupBucket but got %T", backupBucket)
@@ -237,7 +237,7 @@ func (a *actuator) waitUntilBackupBucketExtensionReconciled(ctx context.Context)
 			var generatedSecretRef *corev1.SecretReference
 
 			if backupBucket.Status.GeneratedSecretRef != nil {
-				generatedSecret, err := common.GetSecretFromSecretRef(ctx, a.seedClient.Client(), backupBucket.Status.GeneratedSecretRef)
+				generatedSecret, err := kutil.GetSecretByReference(ctx, a.seedClient.Client(), backupBucket.Status.GeneratedSecretRef)
 				if err != nil {
 					return err
 				}
@@ -270,12 +270,10 @@ func (a *actuator) waitUntilBackupBucketExtensionReconciled(ctx context.Context)
 			}
 
 			if generatedSecretRef != nil || backupBucket.Status.ProviderStatus != nil {
-				_, err := controllerutil.CreateOrUpdate(ctx, a.gardenClient.Client(), a.backupBucket, func() error {
-					a.backupBucket.Status.GeneratedSecretRef = generatedSecretRef
-					a.backupBucket.Status.ProviderStatus = backupBucket.Status.ProviderStatus
-					return nil
-				})
-				return err
+				patch := client.MergeFrom(a.backupBucket.DeepCopy())
+				a.backupBucket.Status.GeneratedSecretRef = generatedSecretRef
+				a.backupBucket.Status.ProviderStatus = backupBucket.Status.ProviderStatus
+				return a.gardenClient.Client().Status().Patch(ctx, a.backupBucket, patch)
 			}
 
 			return nil
@@ -285,7 +283,7 @@ func (a *actuator) waitUntilBackupBucketExtensionReconciled(ctx context.Context)
 
 // deleteBackupBucketExtension deletes BackupBucket extension resource in seed.
 func (a *actuator) deleteBackupBucketExtension(ctx context.Context) error {
-	return common.DeleteExtensionCR(
+	return extensions.DeleteExtensionCR(
 		ctx,
 		a.seedClient.DirectClient(),
 		func() extensionsv1alpha1.Object { return &extensionsv1alpha1.BackupBucket{} },
@@ -296,7 +294,7 @@ func (a *actuator) deleteBackupBucketExtension(ctx context.Context) error {
 
 // waitUntilBackupBucketExtensionDeleted waits until backup bucket extension resource is deleted in seed cluster.
 func (a *actuator) waitUntilBackupBucketExtensionDeleted(ctx context.Context) error {
-	return common.WaitUntilExtensionCRDeleted(
+	return extensions.WaitUntilExtensionCRDeleted(
 		ctx,
 		a.seedClient.DirectClient(),
 		a.logger,
@@ -334,9 +332,15 @@ func (a *actuator) deleteGeneratedBackupBucketSecretInGarden(ctx context.Context
 		},
 	}
 
-	if err := controllerutils.RemoveFinalizer(ctx, a.gardenClient.DirectClient(), secret, finalizerName); err != nil {
-		return err
+	err := a.gardenClient.Client().Get(ctx, client.ObjectKeyFromObject(secret), secret)
+	if err == nil {
+		if err2 := controllerutils.PatchRemoveFinalizers(ctx, a.gardenClient.Client(), secret, finalizerName); err2 != nil {
+			return fmt.Errorf("failed to remove finalizer from BackupBucket generated secret '%s/%s': %w", secret.Namespace, secret.Name, err2)
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("failed to get BackupBucket generated secret '%s/%s': %w", secret.Namespace, secret.Name, err)
 	}
+
 	return client.IgnoreNotFound(a.gardenClient.Client().Delete(ctx, secret))
 }
 

@@ -272,8 +272,8 @@ global:
     vpa: false
     config:
       gardenClientConnection:
-        acceptContentTypes: application/json
-        contentType: application/json
+       # acceptContentTypes: application/json
+       # contentType: application/json
         qps: 100
         burst: 130
       server:
@@ -293,17 +293,27 @@ global:
               -----BEGIN RSA PRIVATE KEY-----
               ...
               -----END RSA PRIVATE KEY-----
-    # resourceAdmissionConfiguration:
-    #   limits:
-    #   - apiGroups: ["core.gardener.cloud"]
-    #     apiVersions: ["*"]
-    #     resources: ["shoots", "plants"]
-    #     size: 100Ki
-    #   unrestrictedSubjects:
-    #   - kind: Group
-    #     name: gardener.cloud:system:seeds
-    #     apiGroup: rbac.authorization.k8s.io
-    #   operationMode: log
+        healthProbes:
+          bindAddress: 0.0.0.0
+          port: 2722
+        metrics:
+          bindAddress: 0.0.0.0
+          port: 2723
+      # resourceAdmissionConfiguration:
+      #   limits:
+      #   - apiGroups: ["core.gardener.cloud"]
+      #     apiVersions: ["*"]
+      #     resources: ["shoots", "plants"]
+      #     size: 100Ki
+      #   unrestrictedSubjects:
+      #   - kind: Group
+      #     name: gardener.cloud:system:seeds
+      #     apiGroup: rbac.authorization.k8s.io
+      #   operationMode: log
+        enableDebugHandlers: false
+    seedRestriction:
+      enabled: true
+
   # Gardener controller manager configuration values
   controller:
     enabled: true
@@ -328,8 +338,8 @@ global:
     vpa: false
     config:
       gardenClientConnection:
-        acceptContentTypes: application/json
-        contentType: application/json
+      # acceptContentTypes: application/json
+      # contentType: application/json
         qps: 100
         burst: 130
       controllers:
@@ -363,6 +373,7 @@ global:
         shootMaintenance:
           concurrentSyncs: 5
           enableShootControlPlaneRestarter: true
+          enableShootCoreAddonRestarter: true
         shootQuota:
           concurrentSyncs: 5
           syncPeriod: 60m
@@ -372,12 +383,18 @@ global:
         shootReference:
           concurrentSyncs: 5
           protectAuditPolicyConfigMaps: false
+        shootRetry:
+          concurrentSyncs: 5
+          retryPeriod: 10m
+        managedSeedSet:
+          concurrentSyncs: 5
+          syncPeriod: 30m
       leaderElection:
         leaderElect: true
         leaseDuration: 15s
         renewDeadline: 10s
         retryPeriod: 2s
-        resourceLock: configmaps
+        resourceLock: leases
       logLevel: info
       kubernetesLogLevel: 0
       server:
@@ -421,8 +438,8 @@ global:
     vpa: false
     config:
       clientConnection:
-        acceptContentTypes: application/json
-        contentType: application/json
+      # acceptContentTypes: application/json
+      # contentType: application/json
         qps: 100
         burst: 130
       leaderElection:
@@ -430,7 +447,7 @@ global:
         leaseDuration: 15s
         renewDeadline: 10s
         retryPeriod: 2s
-        resourceLock: configmaps
+        resourceLock: leases
       logLevel: info
       server:
         http:

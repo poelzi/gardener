@@ -22,8 +22,10 @@ import (
 	. "github.com/gardener/gardener/pkg/apis/core/validation"
 
 	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/extensions/table"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gstruct"
+	gomegatypes "github.com/onsi/gomega/types"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -50,19 +52,55 @@ var (
 		},
 	}
 
+	negativeQuantity = resource.MustParse("-1")
+	validQuantity    = resource.MustParse("100Gi")
+
 	invalidMachineType = core.MachineType{
 		Name:   "",
-		CPU:    resource.MustParse("-1"),
-		GPU:    resource.MustParse("-1"),
+		CPU:    negativeQuantity,
+		GPU:    negativeQuantity,
 		Memory: resource.MustParse("-100Gi"),
+		Storage: &core.MachineTypeStorage{
+			MinSize: &negativeQuantity,
+		},
+	}
+	invalidMachineType2 = core.MachineType{
+		Name:   "negative-storage-size",
+		CPU:    resource.MustParse("2"),
+		GPU:    resource.MustParse("0"),
+		Memory: resource.MustParse("100Gi"),
+		Storage: &core.MachineTypeStorage{
+			StorageSize: &negativeQuantity,
+		},
+	}
+	invalidMachineType3 = core.MachineType{
+		Name:   "min-size-and-storage-size",
+		CPU:    resource.MustParse("2"),
+		GPU:    resource.MustParse("0"),
+		Memory: resource.MustParse("100Gi"),
+		Storage: &core.MachineTypeStorage{
+			MinSize:     &validQuantity,
+			StorageSize: &validQuantity,
+		},
+	}
+	invalidMachineType4 = core.MachineType{
+		Name:    "empty-storage-config",
+		CPU:     resource.MustParse("2"),
+		GPU:     resource.MustParse("0"),
+		Memory:  resource.MustParse("100Gi"),
+		Storage: &core.MachineTypeStorage{},
 	}
 	invalidMachineTypes = []core.MachineType{
 		invalidMachineType,
+		invalidMachineType2,
+		invalidMachineType3,
+		invalidMachineType4,
 	}
 	invalidVolumeTypes = []core.VolumeType{
 		{
-			Name:  "",
-			Class: "",
+			Name:    "",
+			Class:   "",
+			MinSize: &negativeQuantity,
 		},
 	}
 
@@ -187,6 +225,42 @@ var _ = Describe("CloudProfile Validation Tests ", func() {
 
 				Expect(errorList).To(BeEmpty())
 			})
+
+			DescribeTable("CloudProfile metadata",
+				func(objectMeta metav1.ObjectMeta, matcher gomegatypes.GomegaMatcher) {
+					cloudProfile.ObjectMeta = objectMeta
+
+					errorList := ValidateCloudProfile(cloudProfile)
+
+					Expect(errorList).To(matcher)
+				},
+
+				Entry("should forbid CloudProfile with empty metadata",
+					metav1.ObjectMeta{},
+					ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeRequired),
+						"Field": Equal("metadata.name"),
+					}))),
+				),
+				Entry("should forbid CloudProfile with empty name",
+					metav1.ObjectMeta{Name: ""},
+					ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeRequired),
+						"Field": Equal("metadata.name"),
+					}))),
+				),
+				Entry("should allow CloudProfile with '.' in the name",
+					metav1.ObjectMeta{Name: "profile.test"},
+					BeEmpty(),
+				),
+				Entry("should forbid CloudProfile with '_' in the name (not a DNS-1123 subdomain)",
+					metav1.ObjectMeta{Name: "profile_test"},
+					ConsistOf(PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeInvalid),
+						"Field": Equal("metadata.name"),
+					}))),
+				),
+			)
 
 			It("should forbid not specifying a type", func() {
 				cloudProfile.Spec.Type = ""
@@ -600,7 +674,20 @@ var _ = Describe("CloudProfile Validation Tests ", func() {
 					})), PointTo(MatchFields(IgnoreExtras, Fields{
 						"Type":  Equal(field.ErrorTypeInvalid),
 						"Field": Equal("spec.machineTypes[0].memory"),
-					}))))
+					})), PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeInvalid),
+						"Field": Equal("spec.machineTypes[0].storage.minSize"),
+					})), PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeInvalid),
+						"Field": Equal("spec.machineTypes[1].storage.size"),
+					})), PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeInvalid),
+						"Field": Equal("spec.machineTypes[2].storage"),
+					})), PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeInvalid),
+						"Field": Equal("spec.machineTypes[3].storage"),
+					})),
+					))
 				})
 			})
 
@@ -699,7 +786,11 @@ var _ = Describe("CloudProfile Validation Tests ", func() {
 					})), PointTo(MatchFields(IgnoreExtras, Fields{
 						"Type":  Equal(field.ErrorTypeRequired),
 						"Field": Equal("spec.volumeTypes[0].class"),
-					}))))
+					})), PointTo(MatchFields(IgnoreExtras, Fields{
+						"Type":  Equal(field.ErrorTypeInvalid),
+						"Field": Equal("spec.volumeTypes[0].minSize"),
+					})),
+					))
 				})
 			})
 

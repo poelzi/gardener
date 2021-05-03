@@ -33,9 +33,9 @@ import (
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+	"github.com/gardener/gardener/pkg/utils/managedresources"
 
 	resourcesv1alpha1 "github.com/gardener/gardener-resource-manager/pkg/apis/resources/v1alpha1"
-	"github.com/gardener/gardener-resource-manager/pkg/manager"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -110,8 +110,8 @@ type ControlInterface interface {
 // NewDefaultControllerInstallationControl returns a new instance of the default implementation ControlInterface that
 // implements the documented semantics for ControllerInstallations. You should use an instance returned from
 // NewDefaultControllerInstallationControl() for any scenario other than testing.
-func NewDefaultControllerInstallationControl(clientMap clientmap.ClientMap, k8sGardenCoreInformers gardencoreinformers.SharedInformerFactory, recorder record.EventRecorder, config *config.GardenletConfiguration, seedLister gardencorelisters.SeedLister, controllerRegistrationLister gardencorelisters.ControllerRegistrationLister, controllerInstallationLister gardencorelisters.ControllerInstallationLister, gardenNamespace *corev1.Namespace, gardenClusterIdentity string) ControlInterface {
-	return &defaultControllerInstallationControl{clientMap, k8sGardenCoreInformers, recorder, config, seedLister, controllerRegistrationLister, controllerInstallationLister, gardenNamespace, gardenClusterIdentity}
+func NewDefaultControllerInstallationControl(clientMap clientmap.ClientMap, k8sGardenCoreInformers gardencoreinformers.SharedInformerFactory, recorder record.EventRecorder, config *config.GardenletConfiguration, seedLister gardencorelisters.SeedLister, controllerRegistrationLister gardencorelisters.ControllerRegistrationLister, controllerInstallationLister gardencorelisters.ControllerInstallationLister, gardenClusterIdentity string) ControlInterface {
+	return &defaultControllerInstallationControl{clientMap, k8sGardenCoreInformers, recorder, config, seedLister, controllerRegistrationLister, controllerInstallationLister, gardenClusterIdentity}
 }
 
 type defaultControllerInstallationControl struct {
@@ -122,7 +122,6 @@ type defaultControllerInstallationControl struct {
 	seedLister                   gardencorelisters.SeedLister
 	controllerRegistrationLister gardencorelisters.ControllerRegistrationLister
 	controllerInstallationLister gardencorelisters.ControllerInstallationLister
-	gardenNamespace              *corev1.Namespace
 	gardenClusterIdentity        string
 }
 
@@ -149,7 +148,7 @@ func (c *defaultControllerInstallationControl) reconcile(controllerInstallation 
 		return fmt.Errorf("failed to get garden client: %w", err)
 	}
 
-	if err := controllerutils.EnsureFinalizer(ctx, gardenClient.Client(), controllerInstallation, FinalizerName); err != nil {
+	if err := controllerutils.PatchAddFinalizers(ctx, gardenClient.Client(), controllerInstallation, FinalizerName); err != nil {
 		return err
 	}
 
@@ -231,7 +230,6 @@ func (c *defaultControllerInstallationControl) reconcile(controllerInstallation 
 	gardenerValues := map[string]interface{}{
 		"gardener": map[string]interface{}{
 			"garden": map[string]interface{}{
-				"identity":        c.gardenNamespace.UID, // 'identity' value is deprecated to be replaced by 'clusterIdentity'. Should be removed in a future version.
 				"clusterIdentity": c.gardenClusterIdentity,
 			},
 			"seed": map[string]interface{}{
@@ -261,25 +259,7 @@ func (c *defaultControllerInstallationControl) reconcile(controllerInstallation 
 	}
 	conditionValid = gardencorev1beta1helper.UpdatedCondition(conditionValid, gardencorev1beta1.ConditionTrue, "RegistrationValid", "Chart could be rendered successfully.")
 
-	// Create secret
-	data := release.AsSecretData()
-
-	var secretName = controllerInstallation.Name
-	if err := manager.
-		NewSecret(seedClient.Client()).
-		WithNamespacedName(v1beta1constants.GardenNamespace, secretName).
-		WithKeyValues(data).
-		Reconcile(ctx); err != nil {
-		conditionInstalled = gardencorev1beta1helper.UpdatedCondition(conditionInstalled, gardencorev1beta1.ConditionFalse, "InstallationFailed", fmt.Sprintf("Creation of ManagedResource secret %q failed: %+v", secretName, err))
-		return err
-	}
-
-	if err := manager.
-		NewManagedResource(seedClient.Client()).
-		WithNamespacedName(v1beta1constants.GardenNamespace, controllerInstallation.Name).
-		WithSecretRef(secretName).
-		WithClass(v1beta1constants.SeedResourceManagerClass).
-		Reconcile(ctx); err != nil {
+	if err := managedresources.Create(ctx, seedClient.Client(), v1beta1constants.GardenNamespace, controllerInstallation.Name, false, v1beta1constants.SeedResourceManagerClass, release.AsSecretData(), nil, nil, nil); err != nil {
 		conditionInstalled = gardencorev1beta1helper.UpdatedCondition(conditionInstalled, gardencorev1beta1.ConditionFalse, "InstallationFailed", fmt.Sprintf("Creation of ManagedResource %q failed: %+v", controllerInstallation.Name, err))
 		return err
 	}
@@ -359,7 +339,7 @@ func (c *defaultControllerInstallationControl) delete(controllerInstallation *ga
 	}
 	conditionInstalled = gardencorev1beta1helper.UpdatedCondition(conditionInstalled, gardencorev1beta1.ConditionFalse, "DeletionSuccessful", "Deletion of old resources succeeded.")
 
-	return controllerutils.RemoveFinalizer(ctx, gardenClient.DirectClient(), controllerInstallation.DeepCopy(), FinalizerName)
+	return controllerutils.PatchRemoveFinalizers(ctx, gardenClient.Client(), controllerInstallation.DeepCopy(), FinalizerName)
 }
 
 func updateConditions(ctx context.Context, gardenClient kubernetes.Interface, controllerInstallation *gardencorev1beta1.ControllerInstallation, conditions ...gardencorev1beta1.Condition) (*gardencorev1beta1.ControllerInstallation, error) {

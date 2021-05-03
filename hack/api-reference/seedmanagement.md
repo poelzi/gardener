@@ -11,6 +11,8 @@
 Resource Types:
 <ul><li>
 <a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeed">ManagedSeed</a>
+</li><li>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSet">ManagedSeedSet</a>
 </li></ul>
 <h3 id="seedmanagement.gardener.cloud/v1alpha1.ManagedSeed">ManagedSeed
 </h3>
@@ -83,6 +85,7 @@ Shoot
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Shoot references a Shoot that should be registered as Seed.</p>
 </td>
 </tr>
@@ -90,9 +93,7 @@ Shoot
 <td>
 <code>seedTemplate</code></br>
 <em>
-<a href="#seedmanagement.gardener.cloud/v1alpha1.SeedTemplate">
-SeedTemplate
-</a>
+github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedTemplate
 </em>
 </td>
 <td>
@@ -132,6 +133,167 @@ ManagedSeedStatus
 <td>
 <em>(Optional)</em>
 <p>Most recently observed status of the ManagedSeed.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSet">ManagedSeedSet
+</h3>
+<p>
+<p>ManagedSeedSet represents a set of identical ManagedSeeds.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>apiVersion</code></br>
+string</td>
+<td>
+<code>
+seedmanagement.gardener.cloud/v1alpha1
+</code>
+</td>
+</tr>
+<tr>
+<td>
+<code>kind</code></br>
+string
+</td>
+<td><code>ManagedSeedSet</code></td>
+</tr>
+<tr>
+<td>
+<code>metadata</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#objectmeta-v1-meta">
+Kubernetes meta/v1.ObjectMeta
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Standard object metadata.</p>
+Refer to the Kubernetes API documentation for the fields of the
+<code>metadata</code> field.
+</td>
+</tr>
+<tr>
+<td>
+<code>spec</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetSpec">
+ManagedSeedSetSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Spec defines the desired identities of ManagedSeeds and Shoots in this set.</p>
+<br/>
+<br/>
+<table>
+<tr>
+<td>
+<code>replicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Replicas is the desired number of replicas of the given Template. Defaults to 1.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>selector</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#labelselector-v1-meta">
+Kubernetes meta/v1.LabelSelector
+</a>
+</em>
+</td>
+<td>
+<p>Selector is a label query over ManagedSeeds and Shoots that should match the replica count.
+It must match the ManagedSeeds and Shoots template&rsquo;s labels.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>template</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedTemplate">
+ManagedSeedTemplate
+</a>
+</em>
+</td>
+<td>
+<p>Template describes the ManagedSeed that will be created if insufficient replicas are detected.
+Each ManagedSeed created / updated by the ManagedSeedSet will fulfill this template.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>shootTemplate</code></br>
+<em>
+github.com/gardener/gardener/pkg/apis/core/v1beta1.ShootTemplate
+</em>
+</td>
+<td>
+<p>ShootTemplate describes the Shoot that will be created if insufficient replicas are detected for hosting the corresponding ManagedSeed.
+Each Shoot created / updated by the ManagedSeedSet will fulfill this template.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>updateStrategy</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.UpdateStrategy">
+UpdateStrategy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>UpdateStrategy specifies the UpdateStrategy that will be
+employed to update ManagedSeeds / Shoots in the ManagedSeedSet when a revision is made to
+Template / ShootTemplate.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>revisionHistoryLimit</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RevisionHistoryLimit is the maximum number of revisions that will
+be maintained in the ManagedSeedSet&rsquo;s revision history. Defaults to 10.</p>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+<tr>
+<td>
+<code>status</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetStatus">
+ManagedSeedSetStatus
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Status is the current status of ManagedSeeds and Shoots in this ManagedSeedSet.</p>
 </td>
 </tr>
 </tbody>
@@ -214,8 +376,8 @@ bool
 </td>
 <td>
 <em>(Optional)</em>
-<p>MergeWithParent specifies whether the deployment parameters and GardenletConfiguration of the parent gardenlet
-should be merged with the specified deployment parameters and GardenletConfiguration. Defaults to true.</p>
+<p>MergeWithParent specifies whether the GardenletConfiguration of the parent gardenlet
+should be merged with the specified GardenletConfiguration. Defaults to true.</p>
 </td>
 </tr>
 </tbody>
@@ -440,11 +602,265 @@ Defaults to Always if latest tag is specified, or IfNotPresent otherwise.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetSpec">ManagedSeedSetSpec
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSet">ManagedSeedSet</a>)
+</p>
+<p>
+<p>ManagedSeedSetSpec is the specification of a ManagedSeedSet.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>replicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Replicas is the desired number of replicas of the given Template. Defaults to 1.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>selector</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#labelselector-v1-meta">
+Kubernetes meta/v1.LabelSelector
+</a>
+</em>
+</td>
+<td>
+<p>Selector is a label query over ManagedSeeds and Shoots that should match the replica count.
+It must match the ManagedSeeds and Shoots template&rsquo;s labels.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>template</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedTemplate">
+ManagedSeedTemplate
+</a>
+</em>
+</td>
+<td>
+<p>Template describes the ManagedSeed that will be created if insufficient replicas are detected.
+Each ManagedSeed created / updated by the ManagedSeedSet will fulfill this template.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>shootTemplate</code></br>
+<em>
+github.com/gardener/gardener/pkg/apis/core/v1beta1.ShootTemplate
+</em>
+</td>
+<td>
+<p>ShootTemplate describes the Shoot that will be created if insufficient replicas are detected for hosting the corresponding ManagedSeed.
+Each Shoot created / updated by the ManagedSeedSet will fulfill this template.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>updateStrategy</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.UpdateStrategy">
+UpdateStrategy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>UpdateStrategy specifies the UpdateStrategy that will be
+employed to update ManagedSeeds / Shoots in the ManagedSeedSet when a revision is made to
+Template / ShootTemplate.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>revisionHistoryLimit</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RevisionHistoryLimit is the maximum number of revisions that will
+be maintained in the ManagedSeedSet&rsquo;s revision history. Defaults to 10.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetStatus">ManagedSeedSetStatus
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSet">ManagedSeedSet</a>)
+</p>
+<p>
+<p>ManagedSeedSetStatus represents the current state of a ManagedSeedSet.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>observedGeneration</code></br>
+<em>
+int64
+</em>
+</td>
+<td>
+<p>ObservedGeneration is the most recent generation observed for this ManagedSeedSet. It corresponds to the
+ManagedSeedSet&rsquo;s generation, which is updated on mutation by the API Server.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>replicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>Replicas is the number of replicas (ManagedSeeds and their corresponding Shoots) created by the ManagedSeedSet controller.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>readyReplicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>ReadyReplicas is the number of ManagedSeeds created by the ManagedSeedSet controller that have a Ready Condition.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nextReplicaNumber</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>NextReplicaNumber is the ordinal number that will be assigned to the next replica of the ManagedSeedSet.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>currentReplicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>CurrentReplicas is the number of ManagedSeeds created by the ManagedSeedSet controller from the ManagedSeedSet version
+indicated by CurrentRevision.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>updatedReplicas</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<p>UpdatedReplicas is the number of ManagedSeeds created by the ManagedSeedSet controller from the ManagedSeedSet version
+indicated by UpdateRevision.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>currentRevision</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>CurrentRevision, if not empty, indicates the version of the ManagedSeedSet used to generate ManagedSeeds with smaller
+ordinal numbers during updates.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>updateRevision</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>UpdateRevision, if not empty, indicates the version of the ManagedSeedSet used to generate ManagedSeeds with larger
+ordinal numbers during updates</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>collisionCount</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CollisionCount is the count of hash collisions for the ManagedSeedSet. The ManagedSeedSet controller
+uses this field as a collision avoidance mechanism when it needs to create the name for the
+newest ControllerRevision.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>conditions</code></br>
+<em>
+[]github.com/gardener/gardener/pkg/apis/core/v1beta1.Condition
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Conditions represents the latest available observations of a ManagedSeedSet&rsquo;s current state.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>pendingReplica</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.PendingReplica">
+PendingReplica
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>PendingReplica, if not empty, indicates the replica that is currently pending creation, update, or deletion.
+This replica is in a state that requires the controller to wait for it to change before advancing to the next replica.</p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSpec">ManagedSeedSpec
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeed">ManagedSeed</a>)
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeed">ManagedSeed</a>, 
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedTemplate">ManagedSeedTemplate</a>)
 </p>
 <p>
 <p>ManagedSeedSpec is the specification of a ManagedSeed.</p>
@@ -467,6 +883,7 @@ Shoot
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>Shoot references a Shoot that should be registered as Seed.</p>
 </td>
 </tr>
@@ -474,9 +891,7 @@ Shoot
 <td>
 <code>seedTemplate</code></br>
 <em>
-<a href="#seedmanagement.gardener.cloud/v1alpha1.SeedTemplate">
-SeedTemplate
-</a>
+github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedTemplate
 </em>
 </td>
 <td>
@@ -546,14 +961,14 @@ ManagedSeed&rsquo;s generation, which is updated on mutation by the API Server.<
 </tr>
 </tbody>
 </table>
-<h3 id="seedmanagement.gardener.cloud/v1alpha1.SeedTemplate">SeedTemplate
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.ManagedSeedTemplate">ManagedSeedTemplate
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSpec">ManagedSeedSpec</a>)
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetSpec">ManagedSeedSetSpec</a>)
 </p>
 <p>
-<p>SeedTemplate is a template for creating a Seed object, when registering a cluster as a ManagedSeed.</p>
+<p>ManagedSeedTemplate is a template for creating a ManagedSeed object.</p>
 </p>
 <table>
 <thead>
@@ -583,127 +998,170 @@ Refer to the Kubernetes API documentation for the fields of the
 <td>
 <code>spec</code></br>
 <em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedSpec
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Specification of the desired behavior of the Seed.</p>
-<br/>
-<br/>
-<table>
-<tr>
-<td>
-<code>backup</code></br>
-<em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedBackup
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Backup holds the object store configuration for the backups of shoot (currently only etcd).
-If it is not specified, then there won&rsquo;t be any backups taken for shoots associated with this seed.
-If backup field is present in seed, then backups of the etcd from shoot control plane will be stored
-under the configured object store.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>dns</code></br>
-<em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedDNS
-</em>
-</td>
-<td>
-<p>DNS contains DNS-relevant information about this seed cluster.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>networks</code></br>
-<em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedNetworks
-</em>
-</td>
-<td>
-<p>Networks defines the pod, service and worker network of the Seed cluster.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>provider</code></br>
-<em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedProvider
-</em>
-</td>
-<td>
-<p>Provider defines the provider type and region for this Seed cluster.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>secretRef</code></br>
-<em>
-<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#secretreference-v1-core">
-Kubernetes core/v1.SecretReference
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSpec">
+ManagedSeedSpec
 </a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>SecretRef is a reference to a Secret object containing the Kubeconfig and the cloud provider credentials for
-the account the Seed cluster has been deployed to.</p>
-</td>
-</tr>
+<p>Specification of the desired behavior of the ManagedSeed.</p>
+<br/>
+<br/>
+<table>
 <tr>
 <td>
-<code>taints</code></br>
+<code>shoot</code></br>
 <em>
-[]github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedTaint
+<a href="#seedmanagement.gardener.cloud/v1alpha1.Shoot">
+Shoot
+</a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Taints describes taints on the seed.</p>
+<p>Shoot references a Shoot that should be registered as Seed.</p>
 </td>
 </tr>
 <tr>
 <td>
-<code>volume</code></br>
+<code>seedTemplate</code></br>
 <em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedVolume
+github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedTemplate
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Volume contains settings for persistentvolumes created in the seed cluster.</p>
+<p>SeedTemplate is a template for a Seed object, that should be used to register a given cluster as a Seed.
+Either SeedTemplate or Gardenlet must be specified. When Seed is specified, the ManagedSeed controller will not deploy a gardenlet into the cluster
+and an existing gardenlet reconciling the new Seed is required.</p>
 </td>
 </tr>
 <tr>
 <td>
-<code>settings</code></br>
+<code>gardenlet</code></br>
 <em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.SeedSettings
+<a href="#seedmanagement.gardener.cloud/v1alpha1.Gardenlet">
+Gardenlet
+</a>
 </em>
 </td>
 <td>
 <em>(Optional)</em>
-<p>Settings contains certain settings for this seed cluster.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>ingress</code></br>
-<em>
-github.com/gardener/gardener/pkg/apis/core/v1beta1.Ingress
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>Ingress configures Ingress specific settings of the Seed cluster.</p>
+<p>Gardenlet specifies that the ManagedSeed controller should deploy a gardenlet into the cluster
+with the given deployment parameters and GardenletConfiguration.</p>
 </td>
 </tr>
 </table>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.PendingReplica">PendingReplica
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetStatus">ManagedSeedSetStatus</a>)
+</p>
+<p>
+<p>PendingReplica contains information about a replica that is currently pending creation, update, or deletion.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>name</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Name is the replica name.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>reason</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.PendingReplicaReason">
+PendingReplicaReason
+</a>
+</em>
+</td>
+<td>
+<p>Reason is the reason for the replica to be pending.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>since</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#time-v1-meta">
+Kubernetes meta/v1.Time
+</a>
+</em>
+</td>
+<td>
+<p>Since is the moment in time since the replica is pending with the specified reason.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>retries</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Retries is the number of times the shoot operation (reconcile or delete) has been retried after having failed.
+Only applicable if Reason is ShootReconciling or ShootDeleting.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.PendingReplicaReason">PendingReplicaReason
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.PendingReplica">PendingReplica</a>)
+</p>
+<p>
+<p>PendingReplicaReason is a string enumeration type that enumerates all possible reasons for a replica to be pending.</p>
+</p>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.RollingUpdateStrategy">RollingUpdateStrategy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.UpdateStrategy">UpdateStrategy</a>)
+</p>
+<p>
+<p>RollingUpdateStrategy is used to communicate parameters for RollingUpdateStrategyType.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>partition</code></br>
+<em>
+int32
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Partition indicates the ordinal at which the ManagedSeedSet should be partitioned. Defaults to 0.</p>
 </td>
 </tr>
 </tbody>
@@ -738,6 +1196,65 @@ string
 </tr>
 </tbody>
 </table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.UpdateStrategy">UpdateStrategy
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.ManagedSeedSetSpec">ManagedSeedSetSpec</a>)
+</p>
+<p>
+<p>UpdateStrategy specifies the strategy that the ManagedSeedSet
+controller will use to perform updates. It includes any additional parameters
+necessary to perform the update for the indicated strategy.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>type</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.UpdateStrategyType">
+UpdateStrategyType
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Type indicates the type of the UpdateStrategy. Defaults to RollingUpdate.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>rollingUpdate</code></br>
+<em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.RollingUpdateStrategy">
+RollingUpdateStrategy
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>RollingUpdate is used to communicate parameters when Type is RollingUpdateStrategyType.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="seedmanagement.gardener.cloud/v1alpha1.UpdateStrategyType">UpdateStrategyType
+(<code>string</code> alias)</p></h3>
+<p>
+(<em>Appears on:</em>
+<a href="#seedmanagement.gardener.cloud/v1alpha1.UpdateStrategy">UpdateStrategy</a>)
+</p>
+<p>
+<p>UpdateStrategyType is a string enumeration type that enumerates
+all possible update strategies for the ManagedSeedSet controller.</p>
+</p>
 <hr/>
 <p><em>
 Generated with <a href="https://github.com/ahmetb/gen-crd-api-reference-docs">gen-crd-api-reference-docs</a>

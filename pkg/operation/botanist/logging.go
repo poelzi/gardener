@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/gardener/gardener/charts"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/features"
@@ -34,7 +35,8 @@ func (b *Botanist) DeploySeedLogging(ctx context.Context) error {
 	}
 
 	images, err := b.InjectSeedSeedImages(map[string]interface{}{},
-		common.LokiImageName,
+		charts.ImageNameLoki,
+		charts.ImageNameLokiCurator,
 	)
 	if err != nil {
 		return err
@@ -47,7 +49,7 @@ func (b *Botanist) DeploySeedLogging(ctx context.Context) error {
 
 	hvpaValues := make(map[string]interface{})
 	hvpaEnabled := gardenletfeatures.FeatureGate.Enabled(features.HVPA)
-	if b.ShootedSeed != nil {
+	if b.ManagedSeed != nil {
 		hvpaEnabled = gardenletfeatures.FeatureGate.Enabled(features.HVPAForShootedSeed)
 	}
 
@@ -55,14 +57,16 @@ func (b *Botanist) DeploySeedLogging(ctx context.Context) error {
 	lokiValues["hvpa"] = hvpaValues
 
 	if hvpaEnabled {
-		currentResources, err := common.GetContainerResourcesInStatefulSet(ctx, b.K8sSeedClient.Client(), kutil.Key(b.Shoot.SeedNamespace, "loki"))
+		currentResources, err := kutil.GetContainerResourcesInStatefulSet(ctx, b.K8sSeedClient.Client(), kutil.Key(b.Shoot.SeedNamespace, "loki"))
 		if err != nil {
 			return err
 		}
-		if len(currentResources) != 0 && currentResources[0] != nil {
-			lokiValues["resources"] = currentResources[0]
+		if len(currentResources) != 0 && currentResources["loki"] != nil {
+			lokiValues["resources"] = map[string]interface{}{
+				"loki": currentResources["loki"],
+			}
 		}
 	}
 
-	return b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(common.ChartPath, "seed-bootstrap", "charts", "loki"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-logging", b.Shoot.SeedNamespace), kubernetes.Values(lokiValues))
+	return b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(charts.Path, "seed-bootstrap", "charts", "loki"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-logging", b.Shoot.SeedNamespace), kubernetes.Values(lokiValues))
 }

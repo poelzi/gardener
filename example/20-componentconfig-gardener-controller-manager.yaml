@@ -2,8 +2,6 @@
 apiVersion: controllermanager.config.gardener.cloud/v1alpha1
 kind: ControllerManagerConfiguration
 gardenClientConnection:
-  acceptContentTypes: application/json
-  contentType: application/json
   qps: 100
   burst: 130
 controllers:
@@ -18,6 +16,7 @@ controllers:
   shootMaintenance:
     concurrentSyncs: 5
   # enableShootControlPlaneRestarter: true
+  # enableShootCoreAddonRestarter: true
   shootHibernation:
     concurrentSyncs: 5
   shootQuota:
@@ -26,6 +25,9 @@ controllers:
   shootReference:
     concurrentSyncs: 5
     protectAuditPolicyConfigMaps: true
+  shootRetry:
+    concurrentSyncs: 5
+  # retryDuration: 10m
   project:
     concurrentSyncs: 5
     minimumLifetimeDays: 30
@@ -45,12 +47,16 @@ controllers:
   event:
     concurrentSyncs: 5
     ttlNonShootEvents: 1h
+  managedSeedSet:
+    concurrentSyncs: 5
+  # maxShootRetries: 3
+    syncPeriod: 30m
 leaderElection:
   leaderElect: true
   leaseDuration: 15s
   renewDeadline: 10s
   retryPeriod: 2s
-  resourceLock: configmaps
+  resourceLock: leases
 logLevel: info
 kubernetesLogLevel: 0
 server:

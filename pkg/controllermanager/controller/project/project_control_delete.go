@@ -18,46 +18,55 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
-	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/operation/common"
-
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"sigs.k8s.io/controller-runtime/pkg/client"
+	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
-func (c *defaultControl) delete(ctx context.Context, project *gardencorev1beta1.Project) (bool, error) {
-	gardenClient, err := c.clientMap.GetClient(ctx, keys.ForGarden())
-	if err != nil {
-		return false, fmt.Errorf("failed to get garden client: %w", err)
-	}
-
+func (r *projectReconciler) delete(ctx context.Context, project *gardencorev1beta1.Project, gardenClient client.Client, gardenAPIReader client.Reader) (reconcile.Result, error) {
 	if namespace := project.Spec.Namespace; namespace != nil {
-		released, err := c.releaseNamespace(ctx, gardenClient, project, *namespace)
+		inUse, err := kutil.IsNamespaceInUse(ctx, gardenAPIReader, *namespace, gardencorev1beta1.SchemeGroupVersion.WithKind("ShootList"))
 		if err != nil {
-			c.reportEvent(project, true, gardencorev1beta1.ProjectEventNamespaceDeletionFailed, err.Error())
-			_, _ = updateProjectStatus(ctx, gardenClient.GardenCore(), project.ObjectMeta, setProjectPhase(gardencorev1beta1.ProjectFailed))
-			return false, err
+			return reconcile.Result{}, fmt.Errorf("failed to check if namespace is empty: %w", err)
+		}
+
+		if inUse {
+			r.reportEvent(project, true, gardencorev1beta1.ProjectEventNamespaceNotEmpty, "Cannot release namespace %q because it still contains Shoots.", *namespace)
+
+			_ = updateStatus(ctx, gardenClient, project, func() { project.Status.Phase = gardencorev1beta1.ProjectTerminating })
+			return reconcile.Result{RequeueAfter: time.Minute}, nil
+		}
+
+		released, err := r.releaseNamespace(ctx, gardenClient, project, *namespace)
+		if err != nil {
+			r.reportEvent(project, true, gardencorev1beta1.ProjectEventNamespaceDeletionFailed, err.Error())
+			_ = updateStatus(ctx, gardenClient, project, func() { project.Status.Phase = gardencorev1beta1.ProjectFailed })
+			return reconcile.Result{}, err
 		}
 
 		if !released {
-			c.reportEvent(project, false, gardencorev1beta1.ProjectEventNamespaceMarkedForDeletion, "Successfully marked namespace %q for deletion.", *namespace)
-			_, _ = updateProjectStatus(ctx, gardenClient.GardenCore(), project.ObjectMeta, setProjectPhase(gardencorev1beta1.ProjectTerminating))
-			return true, nil
+			r.reportEvent(project, false, gardencorev1beta1.ProjectEventNamespaceMarkedForDeletion, "Successfully marked namespace %q for deletion.", *namespace)
+			_ = updateStatus(ctx, gardenClient, project, func() { project.Status.Phase = gardencorev1beta1.ProjectTerminating })
+			return reconcile.Result{RequeueAfter: time.Minute}, nil
 		}
 	}
 
-	return false, controllerutils.RemoveFinalizer(ctx, gardenClient.DirectClient(), project, gardencorev1beta1.GardenerName)
+	return reconcile.Result{}, controllerutils.PatchRemoveFinalizers(ctx, gardenClient, project, gardencorev1beta1.GardenerName)
 }
 
-func (c *defaultControl) releaseNamespace(ctx context.Context, gardenClient kubernetes.Interface, project *gardencorev1beta1.Project, namespaceName string) (bool, error) {
-	namespace, err := c.namespaceLister.Get(namespaceName)
-	if err != nil {
+func (r *projectReconciler) releaseNamespace(ctx context.Context, gardenClient client.Client, project *gardencorev1beta1.Project, namespaceName string) (bool, error) {
+	namespace := &corev1.Namespace{}
+	if err := r.gardenClient.Client().Get(ctx, kutil.Key(namespaceName), namespace); err != nil {
 		if apierrors.IsNotFound(err) {
 			return true, nil
 		}
@@ -78,14 +87,14 @@ func (c *defaultControl) releaseNamespace(ctx context.Context, gardenClient kube
 	// If the user wants to keep the namespace in the system even if the project gets deleted then we remove the related
 	// labels, annotations, and owner references and only delete the project.
 	var keepNamespace bool
-	if val, ok := namespace.Annotations[common.NamespaceKeepAfterProjectDeletion]; ok {
+	if val, ok := namespace.Annotations[v1beta1constants.NamespaceKeepAfterProjectDeletion]; ok {
 		keepNamespace, _ = strconv.ParseBool(val)
 	}
 
 	if keepNamespace {
-		delete(namespace.Annotations, common.NamespaceProject)
-		delete(namespace.Annotations, common.NamespaceKeepAfterProjectDeletion)
-		delete(namespace.Labels, common.ProjectName)
+		delete(namespace.Annotations, v1beta1constants.NamespaceProject)
+		delete(namespace.Annotations, v1beta1constants.NamespaceKeepAfterProjectDeletion)
+		delete(namespace.Labels, v1beta1constants.ProjectName)
 		delete(namespace.Labels, v1beta1constants.GardenRole)
 		for i := len(namespace.OwnerReferences) - 1; i >= 0; i-- {
 			if ownerRef := namespace.OwnerReferences[i]; ownerRef.APIVersion == gardencorev1beta1.SchemeGroupVersion.String() &&
@@ -95,10 +104,10 @@ func (c *defaultControl) releaseNamespace(ctx context.Context, gardenClient kube
 				namespace.OwnerReferences = append(namespace.OwnerReferences[:i], namespace.OwnerReferences[i+1:]...)
 			}
 		}
-		err = gardenClient.Client().Update(ctx, namespace)
+		err := gardenClient.Update(ctx, namespace)
 		return true, err
 	}
 
-	err = gardenClient.Client().Delete(ctx, namespace, kubernetes.DefaultDeleteOptions...)
+	err := gardenClient.Delete(ctx, namespace, kubernetes.DefaultDeleteOptions...)
 	return false, client.IgnoreNotFound(err)
 }

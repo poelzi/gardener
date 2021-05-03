@@ -19,16 +19,14 @@ import (
 
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/operation/botanist/extensions/infrastructure"
-	"github.com/gardener/gardener/pkg/operation/common"
-	"github.com/gardener/gardener/pkg/operation/shoot"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/extensions/infrastructure"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // DefaultInfrastructure creates the default deployer for the Infrastructure custom resource.
-func (b *Botanist) DefaultInfrastructure(seedClient client.Client) shoot.ExtensionInfrastructure {
+func (b *Botanist) DefaultInfrastructure(seedClient client.Client) infrastructure.Interface {
 	return infrastructure.New(
 		b.Logger,
 		seedClient,
@@ -38,7 +36,7 @@ func (b *Botanist) DefaultInfrastructure(seedClient client.Client) shoot.Extensi
 			Type:              b.Shoot.Info.Spec.Provider.Type,
 			ProviderConfig:    b.Shoot.Info.Spec.Provider.InfrastructureConfig,
 			Region:            b.Shoot.Info.Spec.Region,
-			AnnotateOperation: controllerutils.HasTask(b.Shoot.Info.Annotations, common.ShootTaskDeployInfrastructure) || b.isRestorePhase(),
+			AnnotateOperation: controllerutils.HasTask(b.Shoot.Info.Annotations, v1beta1constants.ShootTaskDeployInfrastructure) || b.isRestorePhase(),
 		},
 		infrastructure.DefaultInterval,
 		infrastructure.DefaultSevereThreshold,
@@ -63,10 +61,6 @@ func (b *Botanist) DeployInfrastructure(ctx context.Context) error {
 func (b *Botanist) WaitForInfrastructure(ctx context.Context) error {
 	if err := b.Shoot.Components.Extensions.Infrastructure.Wait(ctx); err != nil {
 		return err
-	}
-
-	if providerStatus := b.Shoot.Components.Extensions.Infrastructure.ProviderStatus(); providerStatus != nil {
-		b.Shoot.InfrastructureStatus = providerStatus.Raw
 	}
 
 	if nodesCIDR := b.Shoot.Components.Extensions.Infrastructure.NodesCIDR(); nodesCIDR != nil {

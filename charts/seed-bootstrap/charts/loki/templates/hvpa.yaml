@@ -10,6 +10,10 @@ metadata:
 {{ toYaml .Values.labels | indent 4 }}
 spec:
   replicas: 1
+{{- if .Values.hvpa.maintenanceTimeWindow }}
+  maintenanceTimeWindow:
+{{ toYaml .Values.hvpa.maintenanceTimeWindow | indent 4 }}
+{{- end }}
   hpa:
     selector:
       matchLabels:
@@ -44,7 +48,11 @@ spec:
 {{- end }}
     scaleDown:
       updatePolicy:
+{{- if .Values.hvpa.maintenanceTimeWindow }}
+        updateMode: "MaintenanceWindow"
+{{- else }}
         updateMode: "Auto"
+{{- end }}
 {{- if .Values.hvpa.scaleDownStabilization }}
 {{ toYaml .Values.hvpa.scaleDownStabilization | indent 6 }}
 {{- end }}
@@ -66,6 +74,8 @@ spec:
               minAllowed:
                 memory: {{ .Values.hvpa.minAllowed.memory }}
                 cpu: "{{ .Values.hvpa.minAllowed.cpu }}"
+            - containerName: curator
+              mode: "Off"
   weightBasedScalingIntervals:
     - vpaWeight: 100
       startReplicaCount: {{ .Values.replicas }}

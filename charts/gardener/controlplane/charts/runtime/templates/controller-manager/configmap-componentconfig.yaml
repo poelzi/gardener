@@ -16,8 +16,12 @@ data:
     apiVersion: controllermanager.config.gardener.cloud/v1alpha1
     kind: ControllerManagerConfiguration
     gardenClientConnection:
-      acceptContentTypes: {{ required ".Values.global.controller.config.gardenClientConnection.acceptContentTypes is required" .Values.global.controller.config.gardenClientConnection.acceptContentTypes }}
-      contentType: {{ required ".Values.global.controller.config.gardenClientConnection.contentType is required" .Values.global.controller.config.gardenClientConnection.contentType }}
+      {{- with .Values.global.controller.config.gardenClientConnection.acceptContentTypes }}
+      acceptContentTypes: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.global.controller.config.gardenClientConnection.contentType }}
+      contentType: {{ . | quote }}
+      {{- end }}
       qps: {{ required ".Values.global.controller.config.gardenClientConnection.qps is required" .Values.global.controller.config.gardenClientConnection.qps }}
       burst: {{ required ".Values.global.controller.config.gardenClientConnection.burst is required" .Values.global.controller.config.gardenClientConnection.burst }}
       {{- if .Values.global.controller.config.gardenClientConnection.kubeconfig }}
@@ -91,6 +95,9 @@ data:
         {{- if .Values.global.controller.config.controllers.shootMaintenance.enableShootControlPlaneRestarter }}
         enableShootControlPlaneRestarter: {{ .Values.global.controller.config.controllers.shootMaintenance.enableShootControlPlaneRestarter }}
         {{- end }}
+        {{- if .Values.global.controller.config.controllers.shootMaintenance.enableShootCoreAddonRestarter }}
+        enableShootCoreAddonRestarter: {{ .Values.global.controller.config.controllers.shootMaintenance.enableShootCoreAddonRestarter }}
+        {{- end }}
       shootQuota:
         concurrentSyncs: {{ required ".Values.global.controller.config.controllers.shootQuota.concurrentSyncs is required" .Values.global.controller.config.controllers.shootQuota.concurrentSyncs }}
         syncPeriod: {{ required ".Values.global.controller.config.controllers.shootQuota.syncPeriod is required" .Values.global.controller.config.controllers.shootQuota.syncPeriod }}
@@ -99,6 +106,17 @@ data:
       shootReference:
         concurrentSyncs: {{ required ".Values.global.controller.config.controllers.shootReference.concurrentSyncs is required" .Values.global.controller.config.controllers.shootReference.concurrentSyncs }}
         protectAuditPolicyConfigMaps: {{ required ".Values.global.controller.config.controllers.shootReference.protectAuditPolicyConfigMaps is required" .Values.global.controller.config.controllers.shootReference.protectAuditPolicyConfigMaps }}
+      shootRetry:
+        concurrentSyncs: {{ required ".Values.global.controller.config.controllers.shootRetry.concurrentSyncs is required" .Values.global.controller.config.controllers.shootRetry.concurrentSyncs }}
+        {{- if .Values.global.controller.config.controllers.shootRetry.retryPeriod }}
+        retryPeriod: {{ .Values.global.controller.config.controllers.shootRetry.retryPeriod }}
+        {{- end }}
+      managedSeedSet:
+        concurrentSyncs: {{ required ".Values.global.controller.config.controllers.managedSeedSet.concurrentSyncs is required" .Values.global.controller.config.controllers.managedSeedSet.concurrentSyncs }}
+        {{- if .Values.global.controller.config.controllers.managedSeedSet.maxShootRetries }}
+        maxShootRetries: {{ .Values.global.controller.config.controllers.managedSeedSet.maxShootRetries }}
+        {{- end }}
+        syncPeriod: {{ required ".Values.global.controller.config.controllers.managedSeedSet.syncPeriod is required" .Values.global.controller.config.controllers.managedSeedSet.syncPeriod }}
     leaderElection:
       leaderElect: {{ required ".Values.global.controller.config.leaderElection.leaderElect is required" .Values.global.controller.config.leaderElection.leaderElect }}
       leaseDuration: {{ required ".Values.global.controller.config.leaderElection.leaseDuration is required" .Values.global.controller.config.leaderElection.leaseDuration }}

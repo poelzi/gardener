@@ -36,8 +36,15 @@ func RegisterDefaults(scheme *runtime.Scheme) error {
 
 func SetObjectDefaults_ControllerManagerConfiguration(in *ControllerManagerConfiguration) {
 	SetDefaults_ControllerManagerConfiguration(in)
+	SetDefaults_ClientConnectionConfiguration(&in.GardenClientConnection)
 	if in.Controllers.Event != nil {
 		SetDefaults_EventControllerConfiguration(in.Controllers.Event)
+	}
+	if in.Controllers.ShootRetry != nil {
+		SetDefaults_ShootRetryControllerConfiguration(in.Controllers.ShootRetry)
+	}
+	if in.Controllers.ManagedSeedSet != nil {
+		SetDefaults_ManagedSeedSetControllerConfiguration(in.Controllers.ManagedSeedSet)
 	}
 	SetDefaults_LeaderElectionConfiguration(&in.LeaderElection)
 }

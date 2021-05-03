@@ -32,7 +32,6 @@ import (
 	"github.com/gardener/gardener/pkg/utils/flow"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	retryutils "github.com/gardener/gardener/pkg/utils/retry"
-	versionutils "github.com/gardener/gardener/pkg/utils/version"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -52,7 +51,6 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		kubeAPIServerDeploymentReplicas      int32
 		infrastructure                       *extensionsv1alpha1.Infrastructure
 		controlPlaneDeploymentNeeded         bool
-		enableEtcdEncryption                 bool
 		tasksWithErrors                      []string
 		err                                  error
 	)
@@ -87,7 +85,7 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		// all resources have already been deleted. We can delete the Shoot resource as a consequence.
 		errors.ToExecute("Retrieve the Shoot namespace in the Seed cluster", func() error {
 			botanist.SeedNamespaceObject = &corev1.Namespace{}
-			err := botanist.K8sSeedClient.DirectClient().Get(ctx, client.ObjectKey{Name: o.Shoot.SeedNamespace}, botanist.SeedNamespaceObject)
+			err := botanist.K8sSeedClient.APIReader().Get(ctx, client.ObjectKey{Name: o.Shoot.SeedNamespace}, botanist.SeedNamespaceObject)
 			if err != nil {
 				if apierrors.IsNotFound(err) {
 					o.Logger.Infof("Did not find '%s' namespace in the Seed cluster - nothing to be done", o.Shoot.SeedNamespace)
@@ -96,44 +94,13 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			}
 			return err
 		}),
-		// Check if Seed object for shooted seed has been deleted
-		errors.ToExecute("Check if Seed object for shooted seed has been deleted", func() error {
-			if o.ShootedSeed != nil {
-				if err := o.K8sGardenClient.DirectClient().Get(ctx, kutil.Key(o.Shoot.Info.Name), &gardencorev1beta1.Seed{}); err != nil {
-					if !apierrors.IsNotFound(err) {
-						return err
-					}
-					return nil
-				}
-				return fmt.Errorf("seed object for shooted seed is not yet deleted - can't delete shoot")
-			}
-			return nil
-		}),
-		errors.ToExecute("Wait for seed deletion", func() error {
-			if o.Shoot.Info.Namespace == v1beta1constants.GardenNamespace && o.ShootedSeed != nil {
-				// wait for seed object to be deleted before going on with shoot deletion
-				if err := retryutils.UntilTimeout(ctx, time.Second, 300*time.Second, func(context.Context) (done bool, err error) {
-					_, err = o.K8sGardenClient.GardenCore().CoreV1beta1().Seeds().Get(ctx, o.Shoot.Info.Name, kubernetes.DefaultGetOptions())
-					if apierrors.IsNotFound(err) {
-						return retryutils.Ok()
-					}
-					if err != nil {
-						return retryutils.SevereError(err)
-					}
-					return retryutils.NotOk()
-				}); err != nil {
-					return fmt.Errorf("failed while waiting for seed %s to be deleted, err=%s", o.Shoot.Info.Name, err.Error())
-				}
-			}
-			return nil
-		}),
 		// We check whether the kube-apiserver deployment exists in the shoot namespace. If it does not, then we assume
 		// that it has never been deployed successfully, or that we have deleted it in a previous run because we already
 		// cleaned up. We follow that no (more) resources can have been deployed in the shoot cluster, thus there is nothing
 		// to delete anymore.
 		errors.ToExecute("Retrieve kube-apiserver deployment in the shoot namespace in the seed cluster", func() error {
 			deploymentKubeAPIServer := &appsv1.Deployment{}
-			if err := botanist.K8sSeedClient.DirectClient().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeAPIServer), deploymentKubeAPIServer); err != nil {
+			if err := botanist.K8sSeedClient.APIReader().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeAPIServer), deploymentKubeAPIServer); err != nil {
 				if !apierrors.IsNotFound(err) {
 					return err
 				}
@@ -151,7 +118,7 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		// cleaned up.
 		errors.ToExecute("Retrieve the kube-controller-manager deployment in the shoot namespace in the seed cluster", func() error {
 			deploymentKubeControllerManager := &appsv1.Deployment{}
-			if err := botanist.K8sSeedClient.DirectClient().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeControllerManager), deploymentKubeControllerManager); err != nil {
+			if err := botanist.K8sSeedClient.APIReader().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeControllerManager), deploymentKubeControllerManager); err != nil {
 				if !apierrors.IsNotFound(err) {
 					return err
 				}
@@ -163,8 +130,8 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			return nil
 		}),
 		errors.ToExecute("Retrieve the infrastructure resource", func() error {
-			obj := &extensionsv1alpha1.Infrastructure{}
-			if err := botanist.K8sSeedClient.DirectClient().Get(ctx, kutil.Key(o.Shoot.SeedNamespace, o.Shoot.Info.Name), obj); err != nil {
+			obj, err := botanist.Shoot.Components.Extensions.Infrastructure.Get(ctx)
+			if err != nil {
 				if apierrors.IsNotFound(err) {
 					return nil
 				}
@@ -175,10 +142,6 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		}),
 		errors.ToExecute("Check whether control plane deployment is needed", func() error {
 			controlPlaneDeploymentNeeded, err = needsControlPlaneDeployment(ctx, o, kubeAPIServerDeploymentFound, infrastructure)
-			return err
-		}),
-		errors.ToExecute("Check version constraint", func() error {
-			enableEtcdEncryption, err = versionutils.CheckVersionMeetsConstraint(botanist.Shoot.Info.Spec.Kubernetes.Version, ">= 1.13")
 			return err
 		}),
 	)
@@ -257,7 +220,7 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		})
 		_ = g.Add(flow.Task{
 			Name:         "Deploying network policies",
-			Fn:           flow.TaskFn(botanist.DeployNetworkPolicies).RetryUntilTimeout(defaultInterval, defaultTimeout).DoIf(nonTerminatingNamespace),
+			Fn:           flow.TaskFn(botanist.Shoot.Components.NetworkPolicies.Deploy).RetryUntilTimeout(defaultInterval, defaultTimeout).DoIf(nonTerminatingNamespace),
 			Dependencies: flow.NewTaskIDs(ensureShootStateExists).InsertIf(!staticNodesCIDR),
 		})
 		deployETCD = g.Add(flow.Task{
@@ -290,12 +253,12 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		})
 		generateEncryptionConfigurationMetaData = g.Add(flow.Task{
 			Name:         "Generating etcd encryption configuration",
-			Fn:           flow.TaskFn(botanist.GenerateEncryptionConfiguration).RetryUntilTimeout(defaultInterval, defaultTimeout).DoIf(enableEtcdEncryption && cleanupShootResources),
+			Fn:           flow.TaskFn(botanist.GenerateEncryptionConfiguration).RetryUntilTimeout(defaultInterval, defaultTimeout).DoIf(cleanupShootResources),
 			Dependencies: flow.NewTaskIDs(ensureShootStateExists),
 		})
 		createOrUpdateETCDEncryptionConfiguration = g.Add(flow.Task{
 			Name:         "Applying etcd encryption configuration",
-			Fn:           flow.TaskFn(botanist.ApplyEncryptionConfiguration).RetryUntilTimeout(defaultInterval, defaultTimeout).DoIf(enableEtcdEncryption && cleanupShootResources),
+			Fn:           flow.TaskFn(botanist.ApplyEncryptionConfiguration).RetryUntilTimeout(defaultInterval, defaultTimeout).DoIf(cleanupShootResources),
 			Dependencies: flow.NewTaskIDs(ensureShootStateExists, generateEncryptionConfigurationMetaData),
 		})
 		deployKubeAPIServer = g.Add(flow.Task{
@@ -360,6 +323,11 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 			Fn:           flow.TaskFn(botanist.ScaleGardenerResourceManagerToOne).DoIf(cleanupShootResources),
 			Dependencies: flow.NewTaskIDs(deployGardenerResourceManager),
 		})
+		deleteSeedMonitoring = g.Add(flow.Task{
+			Name:         "Deleting shoot monitoring stack in Seed",
+			Fn:           flow.TaskFn(botanist.DeleteSeedMonitoring).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Dependencies: flow.NewTaskIDs(initializeShootClients),
+		})
 		deleteClusterAutoscaler = g.Add(flow.Task{
 			Name:         "Deleting cluster autoscaler",
 			Fn:           flow.TaskFn(botanist.Shoot.Components.ControlPlane.ClusterAutoscaler.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
@@ -422,8 +390,13 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		})
 		deleteAllOperatingSystemConfigs = g.Add(flow.Task{
 			Name:         "Deleting operating system config resources",
-			Fn:           flow.TaskFn(botanist.DeleteAllOperatingSystemConfigs).RetryUntilTimeout(defaultInterval, defaultTimeout),
+			Fn:           flow.TaskFn(botanist.Shoot.Components.Extensions.OperatingSystemConfig.Destroy).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			Dependencies: flow.NewTaskIDs(waitUntilWorkerDeleted),
+		})
+		_ = g.Add(flow.Task{
+			Name:         "Waiting until all operating system config resources are deleted",
+			Fn:           flow.TaskFn(botanist.Shoot.Components.Extensions.OperatingSystemConfig.WaitCleanup).SkipIf(o.Shoot.HibernationEnabled),
+			Dependencies: flow.NewTaskIDs(deleteAllOperatingSystemConfigs),
 		})
 		deleteManagedResources = g.Add(flow.Task{
 			Name:         "Deleting managed resources",
@@ -534,15 +507,17 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 		destroyExternalDomainDNSRecord = g.Add(flow.Task{
 			Name:         "Destroying external domain DNS record",
 			Fn:           flow.TaskFn(botanist.DestroyExternalDNS),
-			Dependencies: flow.NewTaskIDs(syncPointCleaned),
+			Dependencies: flow.NewTaskIDs(syncPointCleaned, deleteKubeAPIServer),
 		})
-		_ = g.Add(flow.Task{
-			Name:         "Deleting shoot monitoring stack in Seed",
-			Fn:           flow.TaskFn(botanist.DeleteSeedMonitoring).RetryUntilTimeout(defaultInterval, defaultTimeout),
+		deleteGrafana = g.Add(flow.Task{
+			Name:         "Deleting Grafana in Seed",
+			Fn:           flow.TaskFn(botanist.DeleteGrafana).RetryUntilTimeout(defaultInterval, defaultTimeout),
 			Dependencies: flow.NewTaskIDs(waitUntilInfrastructureDeleted),
 		})
 
 		syncPoint = flow.NewTaskIDs(
+			deleteSeedMonitoring,
+			deleteGrafana,
 			deleteKubeAPIServer,
 			waitUntilControlPlaneDeleted,
 			waitUntilControlPlaneExposureDeleted,
@@ -600,13 +575,12 @@ func (c *Controller) runDeleteShootFlow(ctx context.Context, o *operation.Operat
 }
 
 func (c *Controller) removeFinalizerFrom(ctx context.Context, gardenClient kubernetes.Interface, shoot *gardencorev1beta1.Shoot) error {
-	newShoot, err := c.updateShootStatusOperationSuccess(ctx, gardenClient.GardenCore(), shoot, "", nil, gardencorev1beta1.LastOperationTypeDelete)
+	newShoot, err := c.updateShootStatusOperationSuccess(ctx, gardenClient.GardenCore(), nil, shoot, "", nil, gardencorev1beta1.LastOperationTypeDelete)
 	if err != nil {
 		return err
 	}
 
-	// Remove finalizer with retry on conflict
-	if err := controllerutils.RemoveGardenerFinalizer(ctx, gardenClient.DirectClient(), newShoot); err != nil {
+	if err := controllerutils.PatchRemoveFinalizers(ctx, gardenClient.Client(), newShoot, gardencorev1beta1.GardenerName); err != nil {
 		return fmt.Errorf("could not remove finalizer from Shoot: %s", err.Error())
 	}
 
@@ -630,7 +604,6 @@ func (c *Controller) removeFinalizerFrom(ctx context.Context, gardenClient kuber
 
 func needsControlPlaneDeployment(ctx context.Context, o *operation.Operation, kubeAPIServerDeploymentFound bool, infrastructure *extensionsv1alpha1.Infrastructure) (bool, error) {
 	var (
-		client    = o.K8sSeedClient.DirectClient()
 		namespace = o.Shoot.SeedNamespace
 		name      = o.Shoot.Info.Name
 	)
@@ -638,7 +611,7 @@ func needsControlPlaneDeployment(ctx context.Context, o *operation.Operation, ku
 	// If the `ControlPlane` resource and the kube-apiserver deployment do no longer exist then we don't want to re-deploy it.
 	// The reason for the second condition is that some providers inject a cloud-provider-config into the kube-apiserver deployment
 	// which is needed for it to run.
-	exists, err := extensionResourceStillExists(ctx, client, &extensionsv1alpha1.ControlPlane{}, namespace, name)
+	exists, err := extensionResourceStillExists(ctx, o.K8sSeedClient.APIReader(), &extensionsv1alpha1.ControlPlane{}, namespace, name)
 	if err != nil {
 		return false, err
 	}
@@ -653,7 +626,6 @@ func needsControlPlaneDeployment(ctx context.Context, o *operation.Operation, ku
 
 	if providerStatus := infrastructure.Status.ProviderStatus; providerStatus != nil {
 		// The infrastructure resource has been found with a non-nil provider status, so redeploy the control plane
-		o.Shoot.InfrastructureStatus = providerStatus.Raw
 		return true, nil
 	}
 
@@ -662,8 +634,8 @@ func needsControlPlaneDeployment(ctx context.Context, o *operation.Operation, ku
 	return false, nil
 }
 
-func extensionResourceStillExists(ctx context.Context, c client.Client, obj client.Object, namespace, name string) (bool, error) {
-	if err := c.Get(ctx, kutil.Key(namespace, name), obj); err != nil {
+func extensionResourceStillExists(ctx context.Context, reader client.Reader, obj client.Object, namespace, name string) (bool, error) {
+	if err := reader.Get(ctx, kutil.Key(namespace, name), obj); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}

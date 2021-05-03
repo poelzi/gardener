@@ -20,9 +20,9 @@ import (
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	gardencoreclientset "github.com/gardener/gardener/pkg/client/core/clientset/versioned"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
+	gardenseedmanagementclientset "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned"
 
 	apiextensionsclientset "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/version"
 	kubernetesclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -37,20 +37,21 @@ var _ kubernetes.Interface = &ClientSet{}
 type ClientSet struct {
 	CheckForwardPodPortFn
 
-	applier         kubernetes.Applier
-	chartRenderer   chartrenderer.Interface
-	chartApplier    kubernetes.ChartApplier
-	restConfig      *rest.Config
-	client          client.Client
-	directClient    client.Client
-	cache           cache.Cache
-	restMapper      meta.RESTMapper
-	kubernetes      kubernetesclientset.Interface
-	gardenCore      gardencoreclientset.Interface
-	apiextension    apiextensionsclientset.Interface
-	apiregistration apiregistrationclientset.Interface
-	restClient      rest.Interface
-	version         string
+	applier              kubernetes.Applier
+	chartRenderer        chartrenderer.Interface
+	chartApplier         kubernetes.ChartApplier
+	restConfig           *rest.Config
+	client               client.Client
+	apiReader            client.Reader
+	directClient         client.Client
+	cache                cache.Cache
+	kubernetes           kubernetesclientset.Interface
+	gardenCore           gardencoreclientset.Interface
+	gardenSeedManagement gardenseedmanagementclientset.Interface
+	apiextension         apiextensionsclientset.Interface
+	apiregistration      apiregistrationclientset.Interface
+	restClient           rest.Interface
+	version              string
 }
 
 // NewClientSet returns a new empty fake ClientSet.
@@ -83,8 +84,14 @@ func (c *ClientSet) Client() client.Client {
 	return c.client
 }
 
+// APIReader returns a client.Reader that directly reads from the API server.
+func (c *ClientSet) APIReader() client.Reader {
+	return c.apiReader
+}
+
 // DirectClient returns a controller-runtime client, which can be used to talk to the API server directly
 // (without using a cache).
+// Deprecated: used APIReader instead, if the controller can't tolerate stale reads.
 func (c *ClientSet) DirectClient() client.Client {
 	return c.directClient
 }
@@ -92,11 +99,6 @@ func (c *ClientSet) DirectClient() client.Client {
 // Cache returns the clientset's controller-runtime cache. It can be used to get Informers for arbitrary objects.
 func (c *ClientSet) Cache() cache.Cache {
 	return c.cache
-}
-
-// RESTMapper returns the restMapper of this ClientSet.
-func (c *ClientSet) RESTMapper() meta.RESTMapper {
-	return c.restMapper
 }
 
 // Kubernetes will return the kubernetes attribute of the Client object.
@@ -107,6 +109,11 @@ func (c *ClientSet) Kubernetes() kubernetesclientset.Interface {
 // GardenCore will return the gardenCore attribute of the Client object.
 func (c *ClientSet) GardenCore() gardencoreclientset.Interface {
 	return c.gardenCore
+}
+
+// GardenSeedManagement will return the gardenSeedManagement attribute of the Client object.
+func (c *ClientSet) GardenSeedManagement() gardenseedmanagementclientset.Interface {
+	return c.gardenSeedManagement
 }
 
 // APIExtension will return the apiextension ClientSet attribute of the Client object.

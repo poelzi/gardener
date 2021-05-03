@@ -1,5 +1,5 @@
 #############      builder       #############
-FROM eu.gcr.io/gardener-project/3rd/golang:1.15.7 AS builder
+FROM golang:1.16.3 AS builder
 
 WORKDIR /go/src/github.com/gardener/gardener
 COPY . .
@@ -9,7 +9,7 @@ ARG EFFECTIVE_VERSION
 RUN make install EFFECTIVE_VERSION=$EFFECTIVE_VERSION
 
 ############# base
-FROM eu.gcr.io/gardener-project/3rd/alpine:3.12.3 AS base
+FROM alpine:3.13.5 AS base
 
 #############      apiserver     #############
 FROM base AS apiserver
@@ -72,3 +72,14 @@ COPY --from=builder /go/bin/gardener-seed-admission-controller /gardener-seed-ad
 WORKDIR /
 
 ENTRYPOINT ["/gardener-seed-admission-controller"]
+
+############# landscaper-gardenlet #############
+FROM base AS landscaper-gardenlet
+
+COPY --from=builder /go/bin/landscaper-gardenlet /landscaper-gardenlet
+COPY charts/gardener/gardenlet /charts/gardener/gardenlet
+COPY charts/utils-templates /charts/utils-templates
+
+WORKDIR /
+
+ENTRYPOINT ["/landscaper-gardenlet"]

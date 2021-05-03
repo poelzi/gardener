@@ -16,33 +16,29 @@ package certificatesigningrequest
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
+	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllermanager"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/logger"
 
 	"github.com/prometheus/client_golang/prometheus"
-	kubeinformers "k8s.io/client-go/informers"
-	certificatesv1beta1lister "k8s.io/client-go/listers/certificates/v1beta1"
+	certificatesv1beta1 "k8s.io/api/certificates/v1beta1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // Controller controls CertificateSigningRequests.
 type Controller struct {
-	clientMap clientmap.ClientMap
+	reconciler     reconcile.Reconciler
+	hasSyncedFuncs []cache.InformerSynced
 
-	control  ControlInterface
-	recorder record.EventRecorder
-
-	csrLister certificatesv1beta1lister.CertificateSigningRequestLister
-	csrQueue  workqueue.RateLimitingInterface
-	csrSynced cache.InformerSynced
-
+	csrQueue               workqueue.RateLimitingInterface
 	workerCh               chan int
 	numberOfRunningWorkers int
 }
@@ -50,36 +46,44 @@ type Controller struct {
 // NewCSRController takes a Kubernetes client for the Garden clusters <k8sGardenClient>, a struct
 // holding information about the acting Gardener, a <kubeInformerFactory>, and a <recorder> for
 // event recording. It creates a new CSR controller.
-func NewCSRController(clientMap clientmap.ClientMap, kubeInformerFactory kubeinformers.SharedInformerFactory, recorder record.EventRecorder) *Controller {
-	var (
-		certificatesV1beta1Informer = kubeInformerFactory.Certificates().V1beta1()
-		csrInformer                 = certificatesV1beta1Informer.CertificateSigningRequests()
-		csrLister                   = csrInformer.Lister()
-	)
-
-	csrController := &Controller{
-		clientMap: clientMap,
-		control:   NewDefaultControl(clientMap),
-		recorder:  recorder,
-		csrLister: csrLister,
-		csrQueue:  workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "CertificateSigningRequest"),
-		workerCh:  make(chan int),
+func NewCSRController(
+	ctx context.Context,
+	clientMap clientmap.ClientMap,
+) (
+	*Controller,
+	error,
+) {
+	gardenClient, err := clientMap.GetClient(ctx, keys.ForGarden())
+	if err != nil {
+		return nil, err
 	}
 
-	csrInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	csrInformer, err := gardenClient.Cache().GetInformer(ctx, &certificatesv1beta1.CertificateSigningRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get CSR Informer: %w", err)
+	}
+
+	csrController := &Controller{
+		reconciler: NewCSRReconciler(logger.Logger, gardenClient),
+		csrQueue:   workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "CertificateSigningRequest"),
+		workerCh:   make(chan int),
+	}
+
+	csrInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    csrController.csrAdd,
 		UpdateFunc: csrController.csrUpdate,
 	})
-	csrController.csrSynced = csrInformer.Informer().HasSynced
 
-	return csrController
+	csrController.hasSyncedFuncs = append(csrController.hasSyncedFuncs, csrInformer.HasSynced)
+
+	return csrController, nil
 }
 
 // Run runs the Controller until the given context <ctx> is alive.
 func (c *Controller) Run(ctx context.Context, workers int) {
 	var waitGroup sync.WaitGroup
 
-	if !cache.WaitForCacheSync(ctx.Done(), c.csrSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.hasSyncedFuncs...) {
 		logger.Logger.Error("Timed out waiting for caches to sync")
 		return
 	}
@@ -95,7 +99,7 @@ func (c *Controller) Run(ctx context.Context, workers int) {
 	logger.Logger.Info("CertificateSigningRequest controller initialized.")
 
 	for i := 0; i < workers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.csrQueue, "CertificateSigningRequest", c.reconcileCertificateSigningRequestKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.csrQueue, "CertificateSigningRequest", c.reconciler, &waitGroup, c.workerCh)
 	}
 
 	// Shutdown handling

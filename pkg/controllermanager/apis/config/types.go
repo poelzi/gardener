@@ -72,6 +72,10 @@ type ControllerManagerControllerConfiguration struct {
 	ShootHibernation ShootHibernationControllerConfiguration
 	// ShootReference defines the configuration of the ShootReference controller. If unspecified, it is defaulted with `concurrentSyncs=5`.
 	ShootReference *ShootReferenceControllerConfiguration
+	// ShootRetry defines the configuration of the ShootRetry controller. If unspecified, it is defaulted with `concurrentSyncs=5`.
+	ShootRetry *ShootRetryControllerConfiguration
+	// ManagedSeedSet defines the configuration of the ManagedSeedSet controller.
+	ManagedSeedSet *ManagedSeedSetControllerConfiguration
 }
 
 // CloudProfileControllerConfiguration defines the configuration of the CloudProfile
@@ -180,6 +184,8 @@ type ShootMaintenanceControllerConfiguration struct {
 	ConcurrentSyncs int
 	// EnableShootControlPlaneRestarter configures whether adequate pods of the shoot control plane are restarted during maintenance.
 	EnableShootControlPlaneRestarter *bool
+	// EnableShootCoreAddonRestarter configures whether some core addons to be restarted during maintenance.
+	EnableShootCoreAddonRestarter *bool
 }
 
 // ShootQuotaControllerConfiguration defines the configuration of the
@@ -210,6 +216,28 @@ type ShootReferenceControllerConfiguration struct {
 	// ProtectAuditPolicyConfigMaps controls whether the shoot reference controller shall protect ConfigMaps containing
 	// audit policies and referenced in Shoots.
 	ProtectAuditPolicyConfigMaps *bool
+}
+
+// ShootRetryControllerConfiguration defines the configuration of the
+// ShootRetry controller.
+type ShootRetryControllerConfiguration struct {
+	// ConcurrentSyncs is the number of workers used for the controller to work on
+	// events.
+	ConcurrentSyncs int
+	// RetryPeriod is the retry period for retrying failed Shoots that match certain criterion.
+	RetryPeriod *metav1.Duration
+}
+
+// ManagedSeedSetControllerConfiguration defines the configuration of the
+// ManagedSeedSet controller.
+type ManagedSeedSetControllerConfiguration struct {
+	// ConcurrentSyncs is the number of workers used for the controller to work on
+	// events.
+	ConcurrentSyncs int
+	// MaxShootRetries is the maximum number of times to retry failed shoots before giving up. Defaults to 3.
+	MaxShootRetries *int
+	// SyncPeriod is the duration how often the existing resources are reconciled.
+	SyncPeriod metav1.Duration
 }
 
 // LeaderElectionConfiguration defines the configuration of leader election

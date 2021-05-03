@@ -15,8 +15,10 @@
 package apiserver
 
 import (
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/admission/plugin/namespace/lifecycle"
+	"k8s.io/apiserver/pkg/admission/plugin/resourcequota"
 	mutatingwebhook "k8s.io/apiserver/pkg/admission/plugin/webhook/mutating"
 	validatingwebhook "k8s.io/apiserver/pkg/admission/plugin/webhook/validating"
 
@@ -25,46 +27,80 @@ import (
 	"github.com/gardener/gardener/plugin/pkg/global/deletionconfirmation"
 	"github.com/gardener/gardener/plugin/pkg/global/extensionvalidation"
 	"github.com/gardener/gardener/plugin/pkg/global/resourcereferencemanager"
+	managedseedvalidator "github.com/gardener/gardener/plugin/pkg/managedseed/validator"
 	plantvalidator "github.com/gardener/gardener/plugin/pkg/plant"
 	seedvalidator "github.com/gardener/gardener/plugin/pkg/seed/validator"
 	shootdns "github.com/gardener/gardener/plugin/pkg/shoot/dns"
+	shootmanagedseed "github.com/gardener/gardener/plugin/pkg/shoot/managedseed"
 	"github.com/gardener/gardener/plugin/pkg/shoot/oidc/clusteropenidconnectpreset"
 	"github.com/gardener/gardener/plugin/pkg/shoot/oidc/openidconnectpreset"
 	shootquotavalidator "github.com/gardener/gardener/plugin/pkg/shoot/quotavalidator"
 	shoottolerationrestriction "github.com/gardener/gardener/plugin/pkg/shoot/tolerationrestriction"
 	shootvalidator "github.com/gardener/gardener/plugin/pkg/shoot/validator"
+	shootvpa "github.com/gardener/gardener/plugin/pkg/shoot/vpa"
 	shootstatedeletionvalidator "github.com/gardener/gardener/plugin/pkg/shootstate/validator"
-	"github.com/gardener/gardener/third_party/forked/kubernetes/plugin/pkg/admission/resourcequota"
 )
 
-// AllOrderedPlugins is the list of all the plugins in order.
-var AllOrderedPlugins = []string{
-	lifecycle.PluginName, // NamespaceLifecycle
-	resourcereferencemanager.PluginName,
-	extensionvalidation.PluginName,
-	shoottolerationrestriction.PluginName,
-	shootdns.PluginName,
-	shootquotavalidator.PluginName,
-	shootvalidator.PluginName,
-	seedvalidator.PluginName,
-	controllerregistrationresources.PluginName,
-	plantvalidator.PluginName,
-	deletionconfirmation.PluginName,
-	openidconnectpreset.PluginName,
-	clusteropenidconnectpreset.PluginName,
-	shootstatedeletionvalidator.PluginName,
-	customverbauthorizer.PluginName,
+var (
+	// AllOrderedPlugins is the list of all the plugins in order.
+	AllOrderedPlugins = []string{
+		lifecycle.PluginName,                       // NamespaceLifecycle
+		resourcereferencemanager.PluginName,        // ResourceReferenceManager
+		extensionvalidation.PluginName,             // ExtensionValidator
+		shoottolerationrestriction.PluginName,      // ShootTolerationRestriction
+		shootdns.PluginName,                        // ShootDNS
+		shootmanagedseed.PluginName,                // ShootManagedSeed
+		shootquotavalidator.PluginName,             // ShootQuotaValidator
+		shootvalidator.PluginName,                  // ShootValidator
+		seedvalidator.PluginName,                   // SeedValidator
+		controllerregistrationresources.PluginName, // ControllerRegistrationResources
+		plantvalidator.PluginName,                  // PlantValidator
+		deletionconfirmation.PluginName,            // DeletionConfirmation
+		openidconnectpreset.PluginName,             // OpenIDConnectPreset
+		clusteropenidconnectpreset.PluginName,      // ClusterOpenIDConnectPreset
+		shootstatedeletionvalidator.PluginName,     // ShootStateDeletionValidator
+		customverbauthorizer.PluginName,            // CustomVerbAuthorizer
+		shootvpa.PluginName,                        // ShootVPAEnabledByDefault
+		managedseedvalidator.PluginName,            // ManagedSeed
 
-	// new admission plugins should generally be inserted above here
-	// webhook, and resourcequota plugins must go at the end
+		// new admission plugins should generally be inserted above here
+		// webhook, and resourcequota plugins must go at the end
 
-	mutatingwebhook.PluginName,   // MutatingAdmissionWebhook
-	validatingwebhook.PluginName, // ValidatingAdmissionWebhook
+		mutatingwebhook.PluginName,   // MutatingAdmissionWebhook
+		validatingwebhook.PluginName, // ValidatingAdmissionWebhook
 
-	// This plugin must remain the last one in the list since it updates the quota usage
-	// which can only happen reliably if previous plugins permitted the request.
-	resourcequota.PluginName, // ResourceQuota
-}
+		// This plugin must remain the last one in the list since it updates the quota usage
+		// which can only happen reliably if previous plugins permitted the request.
+		resourcequota.PluginName, // ResourceQuota
+	}
+
+	// DefaultOnPlugins is the set of admission plugins that are enabled by default.
+	DefaultOnPlugins = sets.NewString(
+		lifecycle.PluginName,                       // NamespaceLifecycle
+		resourcereferencemanager.PluginName,        // ResourceReferenceManager
+		extensionvalidation.PluginName,             // ExtensionValidator
+		shoottolerationrestriction.PluginName,      // ShootTolerationRestriction
+		shootdns.PluginName,                        // ShootDNS
+		shootmanagedseed.PluginName,                // ShootManagedSeed
+		shootquotavalidator.PluginName,             // ShootQuotaValidator
+		shootvalidator.PluginName,                  // ShootValidator
+		seedvalidator.PluginName,                   // SeedValidator
+		controllerregistrationresources.PluginName, // ControllerRegistrationResources
+		plantvalidator.PluginName,                  // PlantValidator
+		deletionconfirmation.PluginName,            // DeletionConfirmation
+		openidconnectpreset.PluginName,             // OpenIDConnectPreset
+		clusteropenidconnectpreset.PluginName,      // ClusterOpenIDConnectPreset
+		shootstatedeletionvalidator.PluginName,     // ShootStateDeletionValidator
+		customverbauthorizer.PluginName,            // CustomVerbAuthorizer
+		managedseedvalidator.PluginName,            // ManagedSeed
+		mutatingwebhook.PluginName,                 // MutatingAdmissionWebhook
+		validatingwebhook.PluginName,               // ValidatingAdmissionWebhook
+		resourcequota.PluginName,                   // ResourceQuota
+	)
+
+	// DefaultOffPlugins is the set of admission plugins that are disabled by default.
+	DefaultOffPlugins = sets.NewString(AllOrderedPlugins...).Difference(DefaultOnPlugins)
+)
 
 // RegisterAllAdmissionPlugins registers all admission plugins.
 func RegisterAllAdmissionPlugins(plugins *admission.Plugins) {
@@ -74,6 +110,7 @@ func RegisterAllAdmissionPlugins(plugins *admission.Plugins) {
 	shoottolerationrestriction.Register(plugins)
 	shootquotavalidator.Register(plugins)
 	shootdns.Register(plugins)
+	shootmanagedseed.Register(plugins)
 	shootvalidator.Register(plugins)
 	seedvalidator.Register(plugins)
 	controllerregistrationresources.Register(plugins)
@@ -82,5 +119,7 @@ func RegisterAllAdmissionPlugins(plugins *admission.Plugins) {
 	clusteropenidconnectpreset.Register(plugins)
 	shootstatedeletionvalidator.Register(plugins)
 	customverbauthorizer.Register(plugins)
+	managedseedvalidator.Register(plugins)
 	resourcequota.Register(plugins)
+	shootvpa.Register(plugins)
 }

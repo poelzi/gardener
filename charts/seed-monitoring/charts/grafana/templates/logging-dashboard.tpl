@@ -6,34 +6,37 @@
     "editable": true,
     "gnetId": null,
     "graphTooltip": 0,
-    "iteration": 1601888883889,
+    "iteration": 1611650877419,
     "links": [],
     "panels": [
       {
         "cacheTimeout": null,
-        "colorBackground": false,
-        "colorValue": false,
-        "colors": [
-          "rgba(245, 54, 54, 0.9)",
-          "rgba(237, 129, 40, 0.89)",
-          "rgba(50, 172, 45, 0.97)"
-        ],
         "datasource": "prometheus",
-        "description": "Current uptime status.",
-        "editable": false,
+        "description": "Shows the percentage of replicas that are up and running.",
         "fieldConfig": {
           "defaults": {
-            "custom": {}
+            "custom": {},
+            "mappings": [],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "color": "red",
+                  "value": null
+                },
+                {
+                  "color": "#EAB839",
+                  "value": 0.5
+                },
+                {
+                  "color": "green",
+                  "value": 1
+                }
+              ]
+            },
+            "unit": "percentunit"
           },
           "overrides": []
-        },
-        "format": "percent",
-        "gauge": {
-          "maxValue": 100,
-          "minValue": 0,
-          "show": true,
-          "thresholdLabels": false,
-          "thresholdMarkers": true
         },
         "gridPos": {
           "h": 7,
@@ -45,59 +48,38 @@
         "id": 1,
         "interval": null,
         "links": [],
-        "mappingType": 1,
-        "mappingTypes": [
-          {
-            "name": "value to text",
-            "value": 1
-          },
-          {
-            "name": "range to text",
-            "value": 2
-          }
-        ],
         "maxDataPoints": 100,
-        "nullPointMode": "connected",
-        "nullText": null,
-        "postfix": "",
-        "postfixFontSize": "50%",
-        "prefix": "",
-        "prefixFontSize": "50%",
-        "rangeMaps": [
-          {
-            "from": "null",
-            "text": "N/A",
-            "to": "null"
-          }
-        ],
-        "sparkline": {
-          "fillColor": "rgba(31, 118, 189, 0.18)",
-          "full": false,
-          "lineColor": "rgb(31, 120, 193)",
-          "show": false
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "reduceOptions": {
+            "calcs": [
+              "mean"
+            ],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "auto"
         },
-        "tableColumn": "",
+        "pluginVersion": "7.2.1",
         "targets": [
           {
-            "expr": "(sum(up{job=\"{{ $.jobName }}\"} == 1) / sum(up{job=\"{{ $.jobName }}\"})) * 100",
+            "expr": "count(up{job=\"$component\"} == 1) / count(up{job=\"$component\"})",
             "format": "time_series",
-            "intervalFactor": 2,
+            "instant": false,
+            "interval": "",
+            "intervalFactor": 1,
+            "legendFormat": "",
             "refId": "A",
             "step": 600
           }
         ],
-        "thresholds": "50, 80",
-        "title": "UP Time",
-        "type": "singlestat",
-        "valueFontSize": "80%",
-        "valueMaps": [
-          {
-            "op": "=",
-            "text": "N/A",
-            "value": "null"
-          }
-        ],
-        "valueName": "avg"
+        "timeFrom": null,
+        "timeShift": null,
+        "title": "Replicas UP",
+        "type": "stat"
       },
       {
         "aliasColors": {},
@@ -148,21 +130,21 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(rate(container_cpu_usage_seconds_total{pod=~\"{{ $.podPrefix }}-(.+)\"}[$__rate_interval])) by (pod)",
+            "expr": "sum(rate(container_cpu_usage_seconds_total{pod=~\"$component-(.+)\"}[$__rate_interval])) by (pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "{{ "{{" }}pod}}-current",
             "refId": "A"
           },
           {
-            "expr": "sum(kube_pod_container_resource_limits_cpu_cores{pod=~\"{{ $.podPrefix }}-(.+)\"}) by (pod)",
+            "expr": "sum(kube_pod_container_resource_limits_cpu_cores{pod=~\"$component-(.+)\"}) by (pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "{{ "{{" }}pod}}-limits",
             "refId": "C"
           },
           {
-            "expr": "sum(kube_pod_container_resource_requests_cpu_cores{pod=~\"{{ $.podPrefix }}-(.+)\"}) by (pod)",
+            "expr": "sum(kube_pod_container_resource_requests_cpu_cores{pod=~\"$component-(.+)\"}) by (pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "{{ "{{" }}pod}}-requests",
@@ -260,21 +242,21 @@
         "steppedLine": false,
         "targets": [
           {
-            "expr": "sum(container_memory_working_set_bytes{pod=~\"{{ $.podPrefix }}-(.+)\"}) by (pod)",
+            "expr": "sum(container_memory_working_set_bytes{pod=~\"$component-(.+)\"}) by (pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "{{ "{{" }}pod}}-current",
             "refId": "A"
           },
           {
-            "expr": "sum(kube_pod_container_resource_limits_memory_bytes{pod=~\"{{ $.podPrefix }}-(.+)\"}) by (pod)",
+            "expr": "sum(kube_pod_container_resource_limits_memory_bytes{pod=~\"$component-(.+)\"}) by (pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "{{ "{{" }}pod}}-limits",
             "refId": "B"
           },
           {
-            "expr": "sum(kube_pod_container_resource_requests_memory_bytes{pod=~\"{{ $.podPrefix }}-(.+)\"}) by (pod)",
+            "expr": "sum(kube_pod_container_resource_requests_memory_bytes{pod=~\"$component-(.+)\"}) by (pod)",
             "format": "time_series",
             "intervalFactor": 1,
             "legendFormat": "{{ "{{" }}pod}}-requests",
@@ -346,7 +328,7 @@
         },
         "targets": [
           {
-            "expr": "{pod_name=~\"{{ $.podPrefix }}-(.+)\", severity=~\"$severity\"} |~ \"$search\"",
+            "expr": "{pod_name=~\"$component-(.+)\", container_name=~\"$container\", severity=~\"$severity\"} |~ \"$search\"",
             "refId": "A"
           }
         ],
@@ -357,7 +339,7 @@
       }
     ],
     "refresh": "1m",
-    "schemaVersion": 25,
+    "schemaVersion": 26,
     "style": "dark",
     "tags": [
       "controlplane",
@@ -367,61 +349,116 @@
     "templating": {
       "list": [
         {
-            "allValue": ".+",
-            "current": {
+          "allValue": "",
+          "current": {
             "selected": true,
-            "tags": [],
-            "text": "All",
-            "value": [
-                "$__all"
-            ]
-            },
-            "hide": 0,
-            "includeAll": true,
-            "label": "Severity",
-            "multi": true,
-            "name": "severity",
-            "options": [
+            "text": "{{ (index $.pods 0).podPrefix }}",
+            "value": "{{ (index $.pods 0).podPrefix }}"
+          },
+          "hide": 0,
+          "includeAll": false,
+          "label": "Component",
+          "multi": false,
+          "name": "component",
+          "options": [
             {
-                "selected": true,
-                "text": "All",
-                "value": "$__all"
-            },
+              "selected": true
+            }{{ range $i, $c := $.pods }},
             {
-                "selected": false,
-                "text": "INFO",
-                "value": "INFO"
-            },
-            {
-                "selected": false,
-                "text": "WARN",
-                "value": "WARN"
-            },
-            {
-                "selected": false,
-                "text": "ERR",
-                "value": "ERR"
-            },
-            {
-                "selected": false,
-                "text": "DBG",
-                "value": "DBG"
-            },
-            {
-                "selected": false,
-                "text": "NOTICE",
-                "value": "NOTICE"
-            },
-            {
-                "selected": false,
-                "text": "FATAL",
-                "value": "FATAL"
+              "selected": false,
+              "text": "{{ $c.podPrefix }}",
+              "value": "{{ $c.podPrefix }}"
             }
+              {{- end }}
+          ],
+          "query": "",
+          "queryValue": "",
+          "skipUrlSync": true,
+          "type": "custom"
+        },
+        {
+          "allValue": null,
+          "current": {
+            "selected": false,
+            "text": "All",
+            "value": "$__all"
+          },
+          "datasource": "prometheus",
+          "definition": "label_values(kube_pod_container_info{type=~\"seed\", pod=~\"$component.+\"}, container)",
+          "hide": 0,
+          "includeAll": true,
+          "label": "Container",
+          "multi": false,
+          "name": "container",
+          "options": [],
+          "query": "label_values(kube_pod_container_info{type=~\"seed\", pod=~\"$component.+\"}, container)",
+          "refresh": 2,
+          "regex": "",
+          "skipUrlSync": false,
+          "sort": 0,
+          "tagValuesQuery": "",
+          "tags": [],
+          "tagsQuery": "",
+          "type": "query",
+          "useTags": false
+        },
+        {
+          "allValue": ".+",
+          "current": {
+            "selected": true,
+            "text": [
+              "All"
             ],
-            "query": "INFO,WARN,ERR,DBG,NOTICE,FATAL",
-            "queryValue": "",
-            "skipUrlSync": false,
-            "type": "custom"
+            "value": [
+              "$__all"
+            ]
+          },
+          "hide": 0,
+          "includeAll": true,
+          "label": "Severity",
+          "multi": true,
+          "name": "severity",
+          "options": [
+            {
+              "selected": true,
+              "text": "All",
+              "value": "$__all"
+            },
+            {
+              "selected": false,
+              "text": "INFO",
+              "value": "INFO"
+            },
+            {
+              "selected": false,
+              "text": "WARN",
+              "value": "WARN"
+            },
+            {
+              "selected": false,
+              "text": "ERR",
+              "value": "ERR"
+            },
+            {
+              "selected": false,
+              "text": "DBG",
+              "value": "DBG"
+            },
+            {
+              "selected": false,
+              "text": "NOTICE",
+              "value": "NOTICE"
+            },
+            {
+              "selected": false,
+              "text": "FATAL",
+              "value": "FATAL"
+            }
+          ],
+          "query": "INFO,WARN,ERR,DBG,NOTICE,FATAL",
+          "queryValue": "",
+          "skipUrlSync": true,
+          "type": "custom"
         },
         {
           "current": {
@@ -475,7 +512,6 @@
     },
     "timezone": "browser",
     "title": "{{ $.dashboardName }}",
-    "uid": "{{ $.jobName }}",
     "version": 1
   }
 {{- end -}}

@@ -16,10 +16,10 @@ spec:
 #     foo: bar
   kubernetes:
     versions:
-    - version: 1.12.1
-    - version: 1.11.0
-    - version: 1.10.6
-    - version: 1.10.5
+    - version: 1.20.1
+    - version: 1.19.0
+    - version: 1.18.6
+    - version: 1.18.5
       expirationDate: 2020-04-05T01:02:03Z # optional
   machineImages:
   - name: coreos
@@ -43,12 +43,14 @@ spec:
   # storage: # optional (not needed in every environment, may only be specified if no volumeTypes have been specified)
   #   class: standard
   #   type: default
-  #   size: 20Gi
+  #   size: 20Gi     # optional, either size or minSize must be configured
+  #   minSize: 10Gi  # optional, either size or minSize must be configured
     usable: true
   volumeTypes: # optional (not needed in every environment, may only be specified if no machineType has a `storage` field)
   - name: gp2
     class: standard
     usable: true
+  # minSize: # optional
   - name: io1
     class: premium
     usable: true

@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/gardener/gardener/pkg/apis/core"
 	"github.com/gardener/gardener/pkg/apis/core/helper"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
@@ -30,10 +32,9 @@ import (
 	coreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
 	corelisters "github.com/gardener/gardener/pkg/client/core/listers/core/internalversion"
 	"github.com/gardener/gardener/pkg/controllerutils"
-	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	cidrvalidation "github.com/gardener/gardener/pkg/utils/validation/cidr"
-	admissionutils "github.com/gardener/gardener/plugin/pkg/utils"
 
 	"github.com/Masterminds/semver"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -192,7 +193,7 @@ func (v *ValidateShoot) Admit(ctx context.Context, a admission.Attributes, o adm
 		}
 	}
 
-	project, err := admissionutils.GetProject(shoot.Namespace, v.projectLister)
+	project, err := gutil.ProjectForNamespaceFromInternalLister(v.projectLister, shoot.Namespace)
 	if err != nil {
 		return apierrors.NewBadRequest(fmt.Sprintf("could not find referenced project: %+v", err.Error()))
 	}
@@ -256,10 +257,6 @@ func (v *ValidateShoot) Admit(ctx context.Context, a admission.Attributes, o adm
 		return apierrors.NewBadRequest(fmt.Sprintf("cloud provider in shoot (%s) is not equal to cloud provider in profile (%s)", shoot.Spec.Provider.Type, cloudProfile.Spec.Type))
 	}
 
-	if err := v.validateShootedSeed(a, shoot, oldShoot); err != nil {
-		return err
-	}
-
 	var (
 		validationContext = &validationContext{
 			cloudProfile: cloudProfile,
@@ -277,7 +274,7 @@ func (v *ValidateShoot) Admit(ctx context.Context, a admission.Attributes, o adm
 		// disallow any changes to the annotations of a shoot that references a seed which is already marked for deletion
 		// except changes to the deletion confirmation annotation
 		if !reflect.DeepEqual(newMeta.Annotations, oldMeta.Annotations) {
-			newConfirmation, newHasConfirmation := newMeta.Annotations[common.ConfirmationDeletion]
+			newConfirmation, newHasConfirmation := newMeta.Annotations[gutil.ConfirmationDeletion]
 
 			// copy the new confirmation value to the old annotations to see if
 			// anything else was changed other than the confirmation annotation
@@ -285,11 +282,11 @@ func (v *ValidateShoot) Admit(ctx context.Context, a admission.Attributes, o adm
 				if oldMeta.Annotations == nil {
 					oldMeta.Annotations = make(map[string]string)
 				}
-				oldMeta.Annotations[common.ConfirmationDeletion] = newConfirmation
+				oldMeta.Annotations[gutil.ConfirmationDeletion] = newConfirmation
 			}
 
 			if !reflect.DeepEqual(newMeta.Annotations, oldMeta.Annotations) {
-				return admission.NewForbidden(a, fmt.Errorf("cannot update annotations of shoot '%s' on seed '%s' already marked for deletion: only the '%s' annotation can be changed", shoot.Name, seed.Name, common.ConfirmationDeletion))
+				return admission.NewForbidden(a, fmt.Errorf("cannot update annotations of shoot '%s' on seed '%s' already marked for deletion: only the '%s' annotation can be changed", shoot.Name, seed.Name, gutil.ConfirmationDeletion))
 			}
 		}
 
@@ -346,7 +343,7 @@ func (v *ValidateShoot) Admit(ctx context.Context, a admission.Attributes, o adm
 	if shoot.Spec.Maintenance != nil && utils.IsTrue(shoot.Spec.Maintenance.ConfineSpecUpdateRollout) &&
 		!apiequality.Semantic.DeepEqual(oldShoot.Spec, shoot.Spec) &&
 		shoot.Status.LastOperation != nil && shoot.Status.LastOperation.State == core.LastOperationStateFailed {
-		metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, common.FailedShootNeedsRetryOperation, "true")
+		metav1.SetMetaDataAnnotation(&shoot.ObjectMeta, v1beta1constants.FailedShootNeedsRetryOperation, "true")
 	}
 
 	if shoot.DeletionTimestamp == nil {
@@ -449,11 +446,56 @@ func validateProvider(c *validationContext) field.ErrorList {
 		if ok, validVolumeTypes := validateVolumeTypes(c.cloudProfile.Spec.VolumeTypes, worker.Volume, oldWorker.Volume, c.cloudProfile.Spec.Regions, c.shoot.Spec.Region, worker.Zones); !ok {
 			allErrs = append(allErrs, field.NotSupported(idxPath.Child("volume", "type"), worker.Volume, validVolumeTypes))
 		}
+		if ok, minSize := validateVolumeSize(c.cloudProfile.Spec.VolumeTypes, c.cloudProfile.Spec.MachineTypes, worker.Machine.Type, worker.Volume); !ok {
+			allErrs = append(allErrs, field.Invalid(idxPath.Child("volume", "size"), worker.Volume.VolumeSize, fmt.Sprintf("size must be >= %s", minSize)))
+		}
 
 		allErrs = append(allErrs, validateZones(c.cloudProfile.Spec.Regions, c.shoot.Spec.Region, c.oldShoot.Spec.Region, worker, oldWorker, idxPath)...)
 	}
 
 	return allErrs
+}
+
+func validateVolumeSize(volumeTypeConstraints []core.VolumeType, machineTypeConstraints []core.MachineType, machineType string, volume *core.Volume) (bool, string) {
+	if volume == nil {
+		return true, ""
+	}
+
+	volSize, err := resource.ParseQuantity(volume.VolumeSize)
+	if err != nil {
+		// don't fail here, this is the shoot validator's job
+		return true, ""
+	}
+	volType := volume.Type
+	if volType == nil {
+		return true, ""
+	}
+
+	// Check machine type constraints first since they override any other constraint for volume types.
+	for _, machineTypeConstraint := range machineTypeConstraints {
+		if machineType != machineTypeConstraint.Name {
+			continue
+		}
+		if machineTypeConstraint.Storage == nil || machineTypeConstraint.Storage.MinSize == nil {
+			continue
+		}
+		if machineTypeConstraint.Storage.Type != *volType {
+			continue
+		}
+		if volSize.Cmp(*machineTypeConstraint.Storage.MinSize) < 0 {
+			return false, machineTypeConstraint.Storage.MinSize.String()
+		}
+	}
+
+	// Now check more common volume type constraints.
+	for _, volumeTypeConstraint := range volumeTypeConstraints {
+		if volumeTypeConstraint.Name == *volType && volumeTypeConstraint.MinSize != nil {
+			if volSize.Cmp(*volumeTypeConstraint.MinSize) < 0 {
+				return false, volumeTypeConstraint.MinSize.String()
+			}
+		}
+	}
+	return true, ""
 }
 
 func validateDNSDomainUniqueness(shootLister corelisters.ShootLister, name string, dns *core.DNS) (field.ErrorList, error) {
@@ -906,43 +948,9 @@ func ensureMachineImage(oldWorkers []core.Worker, worker core.Worker, images []c
 	return getDefaultMachineImage(images, imageName)
 }
 
-func (v ValidateShoot) validateShootedSeed(a admission.Attributes, shoot, oldShoot *core.Shoot) error {
-	if shoot.Namespace != v1beta1constants.GardenNamespace {
-		return nil
-	}
-
-	oldVal, oldOk := oldShoot.Annotations[v1beta1constants.AnnotationShootUseAsSeed]
-	if !oldOk || len(oldVal) == 0 {
-		return nil
-	}
-
-	val, ok := shoot.Annotations[v1beta1constants.AnnotationShootUseAsSeed]
-	if ok && len(val) != 0 {
-		return nil
-	}
-
-	if _, err := v.seedLister.Get(shoot.Name); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return apierrors.NewInternalError(fmt.Errorf("could not get seed '%s' to verify that annotation '%s' can be removed: %v", shoot.Name, v1beta1constants.AnnotationShootUseAsSeed, err))
-	}
-
-	shoots, err := v.shootLister.List(labels.Everything())
-	if err != nil {
-		return apierrors.NewInternalError(fmt.Errorf("could not list shoots to verify that annotation '%s' can be removed: %v", v1beta1constants.AnnotationShootUseAsSeed, err))
-	}
-
-	if admissionutils.IsSeedUsedByShoot(shoot.Name, shoots) {
-		return admission.NewForbidden(a, fmt.Errorf("cannot delete seed '%s' which is still used by shoot(s)", shoot.Name))
-	}
-
-	return nil
-}
-
 func addInfrastructureDeploymentTask(shoot *core.Shoot) {
 	if shoot.ObjectMeta.Annotations == nil {
 		shoot.ObjectMeta.Annotations = make(map[string]string)
 	}
-	controllerutils.AddTasks(shoot.ObjectMeta.Annotations, common.ShootTaskDeployInfrastructure)
+	controllerutils.AddTasks(shoot.ObjectMeta.Annotations, v1beta1constants.ShootTaskDeployInfrastructure)
 }

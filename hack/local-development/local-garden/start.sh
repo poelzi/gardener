@@ -19,6 +19,8 @@ set -o nounset
 set -o pipefail
 
 LOCAL_GARDEN_LABEL=${1:-local-garden}
+ACTIVATE_SEEDAUTHORIZER=${2:-false}
+
 KUBECONFIGPATH="$(dirname $0)/kubeconfigs/default-admin.conf"
 
 mkdir -p dev
@@ -29,7 +31,7 @@ docker network create gardener-dev --label $LOCAL_GARDEN_LABEL
 
 echo "# Start the nodeless kubernetes environment"
 $(dirname $0)/run-kube-etcd $LOCAL_GARDEN_LABEL
-$(dirname $0)/run-kube-apiserver $LOCAL_GARDEN_LABEL
+$(dirname $0)/run-kube-apiserver $LOCAL_GARDEN_LABEL $ACTIVATE_SEEDAUTHORIZER
 $(dirname $0)/run-kube-controller-manager $LOCAL_GARDEN_LABEL
 
 echo "# This etcd will be used to storge gardener resources (e.g., seeds, shoots)"
@@ -42,6 +44,9 @@ for i in 1..10; do
   echo "# Waiting until Kube-Apiserver is available"
 done
 
+echo "# Configuring RBAC resources for Gardener components"
+$(dirname $0)/configure-rbac
+
 echo "# Applying proxy RBAC for the extension controller"
 echo "# After this step, you can start using the cluster at KUBECONFIG=hack/local-development/local-garden/kubeconfigs/default-admin.conf"
 $(dirname $0)/apply-rbac-garden-ns
@@ -50,3 +55,7 @@ echo "# Now you can start using the cluster at with \`export KUBECONFIG=hack/loc
 echo "# Then you need to run \`make dev-setup\` to setup config and certificates files for gardener's components and to register the gardener-apiserver."
 echo "# Finally, run \`make start-apiserver,start-controller-manager,start-scheduler,start-gardenlet\` to start the gardener components as usual."
 echo "# You can use \`make start-all\` to run all components in a screen session."
+
+if $ACTIVATE_SEEDAUTHORIZER; then
+  echo '# Additionally, make sure to run make start-admission-controller'
+fi

@@ -72,12 +72,11 @@ func SetDefaults_GardenletConfiguration(obj *GardenletConfiguration) {
 	if obj.Controllers.ShootStateSync == nil {
 		obj.Controllers.ShootStateSync = &ShootStateSyncControllerConfiguration{}
 	}
-	if obj.Controllers.ShootedSeedRegistration == nil {
-		obj.Controllers.ShootedSeedRegistration = &ShootedSeedRegistrationControllerConfiguration{}
-	}
-
 	if obj.Controllers.SeedAPIServerNetworkPolicy == nil {
 		obj.Controllers.SeedAPIServerNetworkPolicy = &SeedAPIServerNetworkPolicyControllerConfiguration{}
+	}
+	if obj.Controllers.ManagedSeed == nil {
+		obj.Controllers.ManagedSeed = &ManagedSeedControllerConfiguration{}
 	}
 
 	if obj.LeaderElection == nil {
@@ -109,31 +108,8 @@ func SetDefaults_GardenletConfiguration(obj *GardenletConfiguration) {
 	}
 }
 
-// SetDefaults_GardenClientConnection sets defaults for the client connection objects.
-func SetDefaults_GardenClientConnection(obj *GardenClientConnection) {
-	SetDefaults_ClientConnectionConfiguration(&obj.ClientConnectionConfiguration)
-}
-
-// SetDefaults_SeedClientConnection sets defaults for the client connection objects.
-func SetDefaults_SeedClientConnection(obj *SeedClientConnection) {
-	SetDefaults_ClientConnectionConfiguration(&obj.ClientConnectionConfiguration)
-}
-
-// SetDefaults_ShootClientConnection sets defaults for the client connection objects.
-func SetDefaults_ShootClientConnection(obj *ShootClientConnection) {
-	SetDefaults_ClientConnectionConfiguration(&obj.ClientConnectionConfiguration)
-}
-
 // SetDefaults_ClientConnectionConfiguration sets defaults for the client connection objects.
 func SetDefaults_ClientConnectionConfiguration(obj *componentbaseconfigv1alpha1.ClientConnectionConfiguration) {
-	// componentbaseconfigv1alpha1.RecommendedDefaultClientConnectionConfiguration(obj)
-	// https://github.com/kubernetes/client-go/issues/76#issuecomment-396170694
-	if len(obj.AcceptContentTypes) == 0 {
-		obj.AcceptContentTypes = "application/json"
-	}
-	if len(obj.ContentType) == 0 {
-		obj.ContentType = "application/json"
-	}
 	if obj.QPS == 0.0 {
 		obj.QPS = 50.0
 	}
@@ -144,9 +120,11 @@ func SetDefaults_ClientConnectionConfiguration(obj *componentbaseconfigv1alpha1.
 
 // SetDefaults_LeaderElectionConfiguration sets defaults for the leader election of the gardenlet.
 func SetDefaults_LeaderElectionConfiguration(obj *LeaderElectionConfiguration) {
-	componentbaseconfigv1alpha1.RecommendedDefaultLeaderElectionConfiguration(&obj.LeaderElectionConfiguration)
+	if obj.ResourceLock == "" {
+		obj.ResourceLock = resourcelock.LeasesResourceLock
+	}
 
-	obj.ResourceLock = resourcelock.ConfigMapsResourceLock
+	componentbaseconfigv1alpha1.RecommendedDefaultLeaderElectionConfiguration(&obj.LeaderElectionConfiguration)
 
 	if obj.LockObjectNamespace == nil {
 		v := GardenletDefaultLockObjectNamespace
@@ -296,20 +274,35 @@ func SetDefaults_ShootStateSyncControllerConfiguration(obj *ShootStateSyncContro
 	}
 }
 
-// SetDefaults_ShootedSeedRegistrationControllerConfiguration sets defaults for the shooted seed registration controller.
-func SetDefaults_ShootedSeedRegistrationControllerConfiguration(obj *ShootedSeedRegistrationControllerConfiguration) {
-	if obj.SyncJitterPeriod == nil {
-		v := metav1.Duration{Duration: 5 * time.Minute}
-		obj.SyncJitterPeriod = &v
-	}
-}
-
 // SetDefaults_SeedAPIServerNetworkPolicyControllerConfiguration sets defaults for the seed apiserver endpoints controller.
 func SetDefaults_SeedAPIServerNetworkPolicyControllerConfiguration(obj *SeedAPIServerNetworkPolicyControllerConfiguration) {
 	if obj.ConcurrentSyncs == nil {
 		// only use few workers for each seed, as the API server endpoints should stay the same most of the time.
 		v := 3
 		obj.ConcurrentSyncs = &v
+	}
+}
+
+// SetDefaults_ManagedSeedControllerConfiguration sets defaults for the managed seed controller.
+func SetDefaults_ManagedSeedControllerConfiguration(obj *ManagedSeedControllerConfiguration) {
+	if obj.ConcurrentSyncs == nil {
+		v := DefaultControllerConcurrentSyncs
+		obj.ConcurrentSyncs = &v
+	}
+
+	if obj.SyncPeriod == nil {
+		v := metav1.Duration{Duration: 1 * time.Hour}
+		obj.SyncPeriod = &v
+	}
+
+	if obj.WaitSyncPeriod == nil {
+		v := metav1.Duration{Duration: 15 * time.Second}
+		obj.WaitSyncPeriod = &v
+	}
+
+	if obj.SyncJitterPeriod == nil {
+		v := metav1.Duration{Duration: 5 * time.Minute}
+		obj.SyncJitterPeriod = &v
 	}
 }
 

@@ -241,7 +241,7 @@ string
 </td>
 <td>
 <em>(Optional)</em>
-<p>SeedName holds the name of the seed allocated to BackupEntry for running controller.</p>
+<p>SeedName holds the name of the seed to which this BackupEntry is scheduled</p>
 </td>
 </tr>
 </table>
@@ -2129,7 +2129,7 @@ string
 </td>
 <td>
 <em>(Optional)</em>
-<p>SeedName holds the name of the seed allocated to BackupEntry for running controller.</p>
+<p>SeedName holds the name of the seed to which this BackupEntry is scheduled</p>
 </td>
 </tr>
 </tbody>
@@ -2190,6 +2190,19 @@ int64
 <em>(Optional)</em>
 <p>ObservedGeneration is the most recent generation observed for this BackupEntry. It corresponds to the
 BackupEntry&rsquo;s generation, which is updated on mutation by the API Server.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>seedName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SeedName is the name of the seed to which this BackupEntry is currently scheduled. This field is populated
+at the beginning of a create/reconcile operation. It is used when moving the BackupEntry between seeds.</p>
 </td>
 </tr>
 </tbody>
@@ -3663,20 +3676,6 @@ Kubernetes meta/v1.Duration
 </tr>
 <tr>
 <td>
-<code>downscaleDelay</code></br>
-<em>
-<a href="https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
-Kubernetes meta/v1.Duration
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>The period since last downscale, before another downscale can be performed in horizontal pod autoscaler.</p>
-</td>
-</tr>
-<tr>
-<td>
 <code>downscaleStabilization</code></br>
 <em>
 <a href="https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
@@ -3727,20 +3726,6 @@ float64
 <td>
 <em>(Optional)</em>
 <p>The minimum change (from 1.0) in the desired-to-actual metrics ratio for the horizontal pod autoscaler to consider scaling.</p>
-</td>
-</tr>
-<tr>
-<td>
-<code>upscaleDelay</code></br>
-<em>
-<a href="https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
-Kubernetes meta/v1.Duration
-</a>
-</em>
-</td>
-<td>
-<em>(Optional)</em>
-<p>The period since last upscale, before another upscale can be performed in horizontal pod autoscaler.</p>
 </td>
 </tr>
 </tbody>
@@ -4112,6 +4097,20 @@ Kubernetes meta/v1.Duration
 <td>
 <em>(Optional)</em>
 <p>PodEvictionTimeout defines the grace period for deleting pods on failed nodes. Defaults to 2m.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>nodeMonitorGracePeriod</code></br>
+<em>
+<a href="https://godoc.org/k8s.io/apimachinery/pkg/apis/meta/v1#Duration">
+Kubernetes meta/v1.Duration
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>NodeMonitorGracePeriod defines the grace period before an unresponsive node is marked unhealthy.</p>
 </td>
 </tr>
 </tbody>
@@ -4786,8 +4785,7 @@ k8s.io/apimachinery/pkg/api/resource.Quantity
 </td>
 <td>
 <em>(Optional)</em>
-<p>PID is the reserved process-ids.
-To reserve PID, the SupportNodePidsLimit feature gate must be enabled in Kubernetes versions &lt; 1.15.</p>
+<p>PID is the reserved process-ids.</p>
 </td>
 </tr>
 </tbody>
@@ -5603,6 +5601,7 @@ k8s.io/apimachinery/pkg/api/resource.Quantity
 </em>
 </td>
 <td>
+<em>(Optional)</em>
 <p>StorageSize is the storage size.</p>
 </td>
 </tr>
@@ -5615,6 +5614,21 @@ string
 </td>
 <td>
 <p>Type is the type of the storage.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>minSize</code></br>
+<em>
+<a href="https://godoc.org/k8s.io/apimachinery/pkg/api/resource#Quantity">
+k8s.io/apimachinery/pkg/api/resource.Quantity
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MinSize is the minimal supported storage size.
+This overrides any other common minimum size configuration from <code>spec.volumeTypes[*].minSize</code>.</p>
 </td>
 </tr>
 </tbody>
@@ -6096,8 +6110,7 @@ map[string]string
 </td>
 <td>
 <em>(Optional)</em>
-<p>ATTENTION: Only meaningful for Kubernetes &gt;= 1.11
-key=value pairs that describes a required claim in the ID Token. If set, the claim is verified to be present in the ID Token with a matching value.</p>
+<p>key=value pairs that describes a required claim in the ID Token. If set, the claim is verified to be present in the ID Token with a matching value.</p>
 </td>
 </tr>
 <tr>
@@ -6333,7 +6346,7 @@ string
 <p>Role represents the role of this member.
 IMPORTANT: Be aware that this field will be removed in the <code>v1</code> version of this API in favor of the <code>roles</code>
 list.
-TODO: Remove this field in favor of the <code>owner</code> role in <code>v1</code>.</p>
+TODO: Remove this field in favor of the <code>roles</code> list in <code>v1</code>.</p>
 </td>
 </tr>
 <tr>
@@ -7237,9 +7250,7 @@ Kubernetes meta/v1.LabelSelector
 <a href="#core.gardener.cloud/v1beta1.SeedSettings">SeedSettings</a>)
 </p>
 <p>
-<p>SeedSettingExcessCapacityReservation controls the excess capacity reservation for shoot control planes in the
-seed. When enabled then this is done via PodPriority and requires the Seed cluster to have Kubernetes version 1.11
-or the PodPriority feature gate as well as the scheduling.k8s.io/v1alpha1 API group enabled.</p>
+<p>SeedSettingExcessCapacityReservation controls the excess capacity reservation for shoot control planes in the seed.</p>
 </p>
 <table>
 <thead>
@@ -7460,8 +7471,7 @@ SeedSettingLoadBalancerServices
 </td>
 <td>
 <em>(Optional)</em>
-<p>LoadBalancerServices controls certain settings for services of type load balancer that are created in the
-seed.</p>
+<p>LoadBalancerServices controls certain settings for services of type load balancer that are created in the seed.</p>
 </td>
 </tr>
 <tr>
@@ -7484,7 +7494,8 @@ SeedSettingVerticalPodAutoscaler
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#core.gardener.cloud/v1beta1.Seed">Seed</a>)
+<a href="#core.gardener.cloud/v1beta1.Seed">Seed</a>, 
+<a href="#core.gardener.cloud/v1beta1.SeedTemplate">SeedTemplate</a>)
 </p>
 <p>
 <p>SeedSpec is the specification of a Seed.</p>
@@ -7781,6 +7792,182 @@ string
 </tr>
 </tbody>
 </table>
+<h3 id="core.gardener.cloud/v1beta1.SeedTemplate">SeedTemplate
+</h3>
+<p>
+<p>SeedTemplate is a template for creating a Seed object.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>metadata</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#objectmeta-v1-meta">
+Kubernetes meta/v1.ObjectMeta
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Standard object metadata.</p>
+Refer to the Kubernetes API documentation for the fields of the
+<code>metadata</code> field.
+</td>
+</tr>
+<tr>
+<td>
+<code>spec</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedSpec">
+SeedSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Specification of the desired behavior of the Seed.</p>
+<br/>
+<br/>
+<table>
+<tr>
+<td>
+<code>backup</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedBackup">
+SeedBackup
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Backup holds the object store configuration for the backups of shoot (currently only etcd).
+If it is not specified, then there won&rsquo;t be any backups taken for shoots associated with this seed.
+If backup field is present in seed, then backups of the etcd from shoot control plane will be stored
+under the configured object store.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>dns</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedDNS">
+SeedDNS
+</a>
+</em>
+</td>
+<td>
+<p>DNS contains DNS-relevant information about this seed cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>networks</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedNetworks">
+SeedNetworks
+</a>
+</em>
+</td>
+<td>
+<p>Networks defines the pod, service and worker network of the Seed cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>provider</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedProvider">
+SeedProvider
+</a>
+</em>
+</td>
+<td>
+<p>Provider defines the provider type and region for this Seed cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>secretRef</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#secretreference-v1-core">
+Kubernetes core/v1.SecretReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SecretRef is a reference to a Secret object containing the Kubeconfig and the cloud provider credentials for
+the account the Seed cluster has been deployed to.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>taints</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedTaint">
+[]SeedTaint
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Taints describes taints on the seed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>volume</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedVolume">
+SeedVolume
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Volume contains settings for persistentvolumes created in the seed cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>settings</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedSettings">
+SeedSettings
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Settings contains certain settings for this seed cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>ingress</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Ingress">
+Ingress
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Ingress configures Ingress specific settings of the Seed cluster.</p>
+</td>
+</tr>
+</table>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="core.gardener.cloud/v1beta1.SeedVolume">SeedVolume
 </h3>
 <p>
@@ -7918,6 +8105,47 @@ Only useful if service account tokens are also issued by another external system
 </tr>
 </tbody>
 </table>
+<h3 id="core.gardener.cloud/v1beta1.ShootAdvertisedAddress">ShootAdvertisedAddress
+</h3>
+<p>
+(<em>Appears on:</em>
+<a href="#core.gardener.cloud/v1beta1.ShootStatus">ShootStatus</a>)
+</p>
+<p>
+<p>ShootAdvertisedAddress contains information for the shoot&rsquo;s Kube API server.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>name</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Name of the advertised address. e.g. external</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>url</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>The URL of the API Server. e.g. <a href="https://api.foo.bar">https://api.foo.bar</a> or <a href="https://1.2.3.4">https://1.2.3.4</a></p>
+</td>
+</tr>
+</tbody>
+</table>
 <h3 id="core.gardener.cloud/v1beta1.ShootMachineImage">ShootMachineImage
 </h3>
 <p>
@@ -8032,7 +8260,8 @@ string
 </h3>
 <p>
 (<em>Appears on:</em>
-<a href="#core.gardener.cloud/v1beta1.Shoot">Shoot</a>)
+<a href="#core.gardener.cloud/v1beta1.Shoot">Shoot</a>, 
+<a href="#core.gardener.cloud/v1beta1.ShootTemplate">ShootTemplate</a>)
 </p>
 <p>
 <p>ShootSpec is the specification of a Shoot.</p>
@@ -8449,6 +8678,295 @@ string
 <p>ClusterIdentity is the identity of the Shoot cluster</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>advertisedAddresses</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.ShootAdvertisedAddress">
+[]ShootAdvertisedAddress
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>List of addresses on which the Kube API server can be reached.</p>
+</td>
+</tr>
+</tbody>
+</table>
+<h3 id="core.gardener.cloud/v1beta1.ShootTemplate">ShootTemplate
+</h3>
+<p>
+<p>ShootTemplate is a template for creating a Shoot object.</p>
+</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>metadata</code></br>
+<em>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.19/#objectmeta-v1-meta">
+Kubernetes meta/v1.ObjectMeta
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Standard object metadata.</p>
+Refer to the Kubernetes API documentation for the fields of the
+<code>metadata</code> field.
+</td>
+</tr>
+<tr>
+<td>
+<code>spec</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.ShootSpec">
+ShootSpec
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Specification of the desired behavior of the Shoot.</p>
+<br/>
+<br/>
+<table>
+<tr>
+<td>
+<code>addons</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Addons">
+Addons
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Addons contains information about enabled/disabled addons and their configuration.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>cloudProfileName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>CloudProfileName is a name of a CloudProfile object.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>dns</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.DNS">
+DNS
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>DNS contains information about the DNS settings of the Shoot.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>extensions</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Extension">
+[]Extension
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Extensions contain type and provider information for Shoot extensions.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>hibernation</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Hibernation">
+Hibernation
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Hibernation contains information whether the Shoot is suspended or not.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>kubernetes</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Kubernetes">
+Kubernetes
+</a>
+</em>
+</td>
+<td>
+<p>Kubernetes contains the version and configuration settings of the control plane components.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>networking</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Networking">
+Networking
+</a>
+</em>
+</td>
+<td>
+<p>Networking contains information about cluster networking such as CNI Plugin type, CIDRs, &hellip;etc.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>maintenance</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Maintenance">
+Maintenance
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Maintenance contains information about the time window for maintenance operations and which
+operations should be performed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>monitoring</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Monitoring">
+Monitoring
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Monitoring contains information about custom monitoring configurations for the shoot.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>provider</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Provider">
+Provider
+</a>
+</em>
+</td>
+<td>
+<p>Provider contains all provider-specific and provider-relevant information.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>purpose</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.ShootPurpose">
+ShootPurpose
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Purpose is the purpose class for this cluster.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>region</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>Region is a name of a region.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>secretBindingName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<p>SecretBindingName is the name of the a SecretBinding that has a reference to the provider secret.
+The credentials inside the provider secret will be used to create the shoot in the respective account.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>seedName</code></br>
+<em>
+string
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SeedName is the name of the seed cluster that runs the control plane of the Shoot.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>seedSelector</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.SeedSelector">
+SeedSelector
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>SeedSelector is an optional selector which must match a seed&rsquo;s labels for the shoot to be scheduled on that seed.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>resources</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.NamedResourceReference">
+[]NamedResourceReference
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Resources holds a list of named resource references that can be referred to in extension configs by their names.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>tolerations</code></br>
+<em>
+<a href="#core.gardener.cloud/v1beta1.Toleration">
+[]Toleration
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>Tolerations contains the tolerations for taints on seed clusters.</p>
+</td>
+</tr>
+</table>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="core.gardener.cloud/v1beta1.Toleration">Toleration
@@ -8742,6 +9260,20 @@ bool
 <td>
 <em>(Optional)</em>
 <p>Usable defines if the volume type can be used for shoot clusters.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>minSize</code></br>
+<em>
+<a href="https://godoc.org/k8s.io/apimachinery/pkg/api/resource#Quantity">
+k8s.io/apimachinery/pkg/api/resource.Quantity
+</a>
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>MinSize is the minimal supported storage size.</p>
 </td>
 </tr>
 </tbody>
@@ -9089,7 +9621,8 @@ KubeletConfig
 </td>
 <td>
 <em>(Optional)</em>
-<p>Kubelet contains configuration settings for all kubelets of this worker pool.</p>
+<p>Kubelet contains configuration settings for all kubelets of this worker pool.
+If set, all <code>spec.kubernetes.kubelet</code> settings will be overwritten for this worker pool (no merge of settings).</p>
 </td>
 </tr>
 </tbody>

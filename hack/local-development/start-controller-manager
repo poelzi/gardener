@@ -17,11 +17,17 @@ set -e
 
 source $(dirname "${0}")/common/helpers
 
-mktemp_kubeconfig
-kubeconfig="$__tmp_kubeconfig"
-trap cleanup_kubeconfig EXIT
+kubeconfig="$KUBECONFIG"
 
-KUBECONFIG="${KUBECONFIG:-$kubeconfig}" GO111MODULE=on \
+if [[ $(k8s_env) == "$NODELESS" ]]; then
+  kubeconfig="$(dirname $0)/local-garden/kubeconfigs/gardener-controller-manager.conf"
+else
+  mktemp_kubeconfig
+  kubeconfig="$__tmp_kubeconfig"
+  trap cleanup_kubeconfig EXIT
+fi
+
+KUBECONFIG="$kubeconfig" GO111MODULE=on \
     go run \
       -mod=vendor \
       -ldflags "$("$(dirname $0)"/../get-build-ld-flags.sh)" \

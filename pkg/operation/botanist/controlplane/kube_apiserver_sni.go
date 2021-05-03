@@ -34,13 +34,19 @@ type KubeAPIServerSNIValues struct {
 	NamespaceUID             types.UID           `json:"namespaceUID,omitempty"`
 	ApiserverClusterIP       string              `json:"apiserverClusterIP,omitempty"`
 	IstioIngressGateway      IstioIngressGateway `json:"istioIngressGateway,omitempty"`
-	EnableKonnectivityTunnel bool                `json:"enableKonnectivityTunnel,omitempty"`
+	InternalDNSNameApiserver string              `json:"internalDNSNameApiserver,omitempty"`
+	ReversedVPN              ReversedVPN         `json:"reversedVPN,omitempty"`
 }
 
-// IstioIngressGateway contain the values for istio ingress gateway configuration.
+// IstioIngressGateway contains the values for istio ingress gateway configuration.
 type IstioIngressGateway struct {
 	Namespace string            `json:"namespace,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
+}
+
+// ReversedVPN contains whether the reversed vpn is enabled or not.
+type ReversedVPN struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // NewKubeAPIServerSNI creates a new instance of DeployWaiter which deploys Istio resources for

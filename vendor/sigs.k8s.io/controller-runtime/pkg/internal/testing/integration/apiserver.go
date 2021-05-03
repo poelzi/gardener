@@ -105,7 +105,7 @@ func (s *APIServer) setProcessState() error {
 
 	// Defaulting the secure port
 	if s.SecurePort == 0 {
-		s.SecurePort, _, err = addr.Suggest()
+		s.SecurePort, _, err = addr.Suggest("")
 		if err != nil {
 			return err
 		}
@@ -150,6 +150,9 @@ func (s *APIServer) populateAPIServerCerts() error {
 		return err
 	}
 
+	if err := ioutil.WriteFile(filepath.Join(s.CertDir, "apiserver-ca.crt"), ca.CA.CertBytes(), 0640); err != nil {
+		return err
+	}
 	if err := ioutil.WriteFile(filepath.Join(s.CertDir, "apiserver.crt"), certData, 0640); err != nil {
 		return err
 	}

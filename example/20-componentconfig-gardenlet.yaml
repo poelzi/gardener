@@ -2,18 +2,12 @@
 apiVersion: gardenlet.config.gardener.cloud/v1alpha1
 kind: GardenletConfiguration
 gardenClientConnection:
-  acceptContentTypes: application/json
-  contentType: application/json
   qps: 100
   burst: 130
 seedClientConnection:
-  acceptContentTypes: application/json
-  contentType: application/json
   qps: 100
   burst: 130
 shootClientConnection:
-  acceptContentTypes: application/json
-  contentType: application/json
   qps: 25
   burst: 50
 controllers:
@@ -22,6 +16,8 @@ controllers:
   backupEntry:
     concurrentSyncs: 20
     deletionGracePeriodHours: 0
+  # deletionGracePeriodShootPurposes:
+  # - production
   controllerInstallation:
     concurrentSyncs: 20
   controllerInstallationCare:
@@ -62,11 +58,14 @@ controllers:
   shootStateSync:
     concurrentSyncs: 1
     syncPeriod: 30s
-  shootedSeedRegistration:
-    syncJitterPeriod: 5m
   seed:
     concurrentSyncs: 5
     syncPeriod: 1m
+  managedSeed:
+    concurrentSyncs: 5
+    syncPeriod: 1h
+    waitSyncPeriod: 15s
+    syncJitterPeriod: 5m
 resources:
   capacity:
     shoots: 200
@@ -75,7 +74,7 @@ leaderElection:
   leaseDuration: 15s
   renewDeadline: 10s
   retryPeriod: 2s
-  resourceLock: configmaps
+  resourceLock: leases
 logLevel: info
 kubernetesLogLevel: 0
 server:
@@ -90,13 +89,14 @@ featureGates:
   Logging: true
   HVPA: true
   HVPAForShootedSeed: true
-  ManagedIstio: false
+  ManagedIstio: true
   KonnectivityTunnel: false
-  APIServerSNI: false
+  APIServerSNI: true
   CachedRuntimeClients: true
   NodeLocalDNS: true
   MountHostCADirectories: false
   SeedKubeScheduler: false
+  ReversedVPN: false
 seedSelector: {} # selects all seeds, only use for development purposes
 # seedConfig:
 #   metadata:

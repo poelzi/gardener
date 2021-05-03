@@ -4,8 +4,10 @@ hosts:
 name: kube-apiserver
 namespaceUID: 1234-1234
 apiserverClusterIP: 1.1.1.1
-enableKonnectivityTunnel: false
 istioIngressGateway:
   namespace: istio-ingress
   labels:
     istio: ingressgateway
+internalDNSNameApiserver: api.internal
+reversedVPN:
+  enabled: false

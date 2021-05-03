@@ -23,11 +23,14 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/konnectivity"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/vpnseedserver"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/operation/seed"
 	"github.com/gardener/gardener/pkg/operation/shootsecrets"
 	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/flow"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 
 	corev1 "k8s.io/api/core/v1"
@@ -44,7 +47,7 @@ import (
 func (b *Botanist) GenerateAndSaveSecrets(ctx context.Context) error {
 	gardenerResourceDataList := gardencorev1alpha1helper.GardenerResourceDataList(b.ShootState.Spec.Gardener).DeepCopy()
 
-	if val, ok := b.Shoot.Info.Annotations[v1beta1constants.GardenerOperation]; ok && val == common.ShootOperationRotateKubeconfigCredentials {
+	if val, ok := b.Shoot.Info.Annotations[v1beta1constants.GardenerOperation]; ok && val == v1beta1constants.ShootOperationRotateKubeconfigCredentials {
 		if err := b.rotateKubeconfigSecrets(ctx, &gardenerResourceDataList); err != nil {
 			return err
 		}
@@ -52,11 +55,20 @@ func (b *Botanist) GenerateAndSaveSecrets(ctx context.Context) error {
 
 	if b.Shoot.Info.DeletionTimestamp == nil {
 		if b.Shoot.KonnectivityTunnelEnabled {
+			if err := b.cleanupTunnelSecrets(ctx, &gardenerResourceDataList, "vpn-seed", "vpn-seed-tlsauth", "vpn-shoot", vpnseedserver.DeploymentName, vpnseedserver.VpnShootSecretName, vpnseedserver.VpnSeedServerTLSAuth); err != nil {
+				return err
+			}
+		} else {
+			if err := b.cleanupTunnelSecrets(ctx, &gardenerResourceDataList, konnectivity.SecretNameServerKubeconfig, konnectivity.SecretNameServerTLS); err != nil {
+				return err
+			}
+		}
+		if b.Shoot.ReversedVPNEnabled {
 			if err := b.cleanupTunnelSecrets(ctx, &gardenerResourceDataList, "vpn-seed", "vpn-seed-tlsauth", "vpn-shoot"); err != nil {
 				return err
 			}
 		} else {
-			if err := b.cleanupTunnelSecrets(ctx, &gardenerResourceDataList, common.KonnectivityServerKubeconfig, common.KonnectivityServerCertName); err != nil {
+			if err := b.cleanupTunnelSecrets(ctx, &gardenerResourceDataList, vpnseedserver.DeploymentName, vpnseedserver.VpnShootSecretName, vpnseedserver.VpnSeedServerTLSAuth); err != nil {
 				return err
 			}
 		}
@@ -73,7 +85,7 @@ func (b *Botanist) GenerateAndSaveSecrets(ctx context.Context) error {
 	secretsManager := shootsecrets.NewSecretsManager(
 		gardenerResourceDataList,
 		b.generateStaticTokenConfig(),
-		wantedCertificateAuthorities,
+		b.wantedCertificateAuthorities(),
 		b.generateWantedSecretConfigs,
 	)
 
@@ -102,7 +114,7 @@ func (b *Botanist) DeploySecrets(ctx context.Context) error {
 	secretsManager := shootsecrets.NewSecretsManager(
 		gardenerResourceDataList,
 		b.generateStaticTokenConfig(),
-		wantedCertificateAuthorities,
+		b.wantedCertificateAuthorities(),
 		b.generateWantedSecretConfigs,
 	)
 
@@ -211,7 +223,16 @@ func (b *Botanist) fetchExistingSecrets(ctx context.Context) (map[string]*corev1
 }
 
 func (b *Botanist) rotateKubeconfigSecrets(ctx context.Context, gardenerResourceDataList *gardencorev1alpha1helper.GardenerResourceDataList) error {
-	for _, secretName := range []string{common.StaticTokenSecretName, common.BasicAuthSecretName, common.KubecfgSecretName} {
+	secrets := []string{
+		common.StaticTokenSecretName,
+		common.BasicAuthSecretName,
+		common.KubecfgSecretName,
+	}
+	if b.Shoot.KonnectivityTunnelEnabled {
+		secrets = append(secrets, konnectivity.SecretNameServerKubeconfig)
+	}
+
+	for _, secretName := range secrets {
 		if err := b.K8sSeedClient.Client().Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: b.Shoot.SeedNamespace}}); client.IgnoreNotFound(err) != nil {
 			return err
 		}
@@ -295,11 +316,14 @@ type projectSecret struct {
 // the project namespace in the Garden cluster and the monitoring credentials for the
 // user-facing monitoring stack are also copied.
 func (b *Botanist) SyncShootCredentialsToGarden(ctx context.Context) error {
-	kubecfgURL := common.GetAPIServerDomain(b.Shoot.InternalClusterDomain)
+	kubecfgURL := gutil.GetAPIServerDomain(b.Shoot.InternalClusterDomain)
 	if b.Shoot.ExternalClusterDomain != nil {
-		kubecfgURL = common.GetAPIServerDomain(*b.Shoot.ExternalClusterDomain)
+		kubecfgURL = gutil.GetAPIServerDomain(*b.Shoot.ExternalClusterDomain)
 	}
 
+	// Secrets which are created by Gardener itself are usually excluded from informers to improve performance.
+	// Hence, if new secrets are synced to the Garden cluster, please consider adding the used `gardener.cloud/role`
+	// label value to the `v1beta1constants.ControlPlaneSecretRoles` list.
 	projectSecrets := []projectSecret{
 		{
 			secretName:  common.KubecfgSecretName,

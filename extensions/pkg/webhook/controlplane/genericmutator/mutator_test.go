@@ -23,12 +23,13 @@ import (
 	extensionswebhook "github.com/gardener/gardener/extensions/pkg/webhook"
 	gcontext "github.com/gardener/gardener/extensions/pkg/webhook/context"
 	"github.com/gardener/gardener/extensions/pkg/webhook/controlplane/genericmutator"
+	mockgenericmutator "github.com/gardener/gardener/extensions/pkg/webhook/controlplane/genericmutator/mock"
 	gardencorevalpha1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockcontrolplane "github.com/gardener/gardener/pkg/mock/gardener/extensions/webhook/controlplane"
-	mockgenericmutator "github.com/gardener/gardener/pkg/mock/gardener/extensions/webhook/controlplane/genericmutator"
+	mockkubelet "github.com/gardener/gardener/pkg/operation/botanist/component/extensions/operatingsystemconfig/original/components/kubelet/mock"
+	mockoscutils "github.com/gardener/gardener/pkg/operation/botanist/component/extensions/operatingsystemconfig/utils/mock"
 
 	"github.com/coreos/go-systemd/v22/unit"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/v1alpha1"
@@ -100,7 +101,7 @@ var _ = Describe("Mutator", func() {
 				},
 				Spec: gardencorevalpha1.ShootSpec{
 					Kubernetes: gardencorevalpha1.Kubernetes{
-						Version: "1.13.4",
+						Version: "1.15.4",
 					},
 				},
 			},
@@ -118,18 +119,18 @@ var _ = Describe("Mutator", func() {
 	Describe("#Mutate", func() {
 		var (
 			mutator  extensionswebhook.Mutator
-			kcc      *mockcontrolplane.MockKubeletConfigCodec
+			kcc      *mockkubelet.MockConfigCodec
 			ensurer  *mockgenericmutator.MockEnsurer
-			us       *mockcontrolplane.MockUnitSerializer
-			fcic     *mockcontrolplane.MockFileContentInlineCodec
+			us       *mockoscutils.MockUnitSerializer
+			fcic     *mockoscutils.MockFileContentInlineCodec
 			old, new client.Object
 		)
 
 		BeforeEach(func() {
 			ensurer = mockgenericmutator.NewMockEnsurer(ctrl)
-			kcc = mockcontrolplane.NewMockKubeletConfigCodec(ctrl)
-			us = mockcontrolplane.NewMockUnitSerializer(ctrl)
-			fcic = mockcontrolplane.NewMockFileContentInlineCodec(ctrl)
+			kcc = mockkubelet.NewMockConfigCodec(ctrl)
+			us = mockoscutils.NewMockUnitSerializer(ctrl)
+			fcic = mockoscutils.NewMockFileContentInlineCodec(ctrl)
 			mutator = genericmutator.NewMutator(ensurer, us, kcc, fcic, logger)
 			old = nil
 			new = nil
@@ -425,8 +426,8 @@ func checkOperatingSystemConfig(osc *extensionsv1alpha1.OperatingSystemConfig) {
 	Expect(cloudProvider.Content.Inline).To(Equal(&extensionsv1alpha1.FileContentInline{Data: cloudproviderconfEncoded, Encoding: encoding}))
 }
 
-func clientGet(result runtime.Object) interface{} {
-	return func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+func clientGet(result client.Object) interface{} {
+	return func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 		switch obj.(type) {
 		case *extensionsv1alpha1.Cluster:
 			*obj.(*extensionsv1alpha1.Cluster) = *result.(*extensionsv1alpha1.Cluster)

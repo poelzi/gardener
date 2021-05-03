@@ -19,14 +19,14 @@ import (
 	"fmt"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	mockkubernetes "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	"github.com/gardener/gardener/pkg/logger"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockkubernetes "github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
-	mockkubecontrollermanager "github.com/gardener/gardener/pkg/mock/gardener/operation/botanist/controlplane/kubecontrollermanager"
 	"github.com/gardener/gardener/pkg/operation"
 	. "github.com/gardener/gardener/pkg/operation/botanist"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
-	"github.com/gardener/gardener/pkg/operation/botanist/controlplane/kubecontrollermanager"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/kubecontrollermanager"
+	mockkubecontrollermanager "github.com/gardener/gardener/pkg/operation/botanist/component/kubecontrollermanager/mock"
 	shootpkg "github.com/gardener/gardener/pkg/operation/shoot"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
@@ -242,7 +242,7 @@ var _ = Describe("KubeControllerManager", func() {
 				SeedNamespace: namespace,
 			}
 
-			kubernetesClient.EXPECT().DirectClient().Return(c)
+			kubernetesClient.EXPECT().Client().Return(c)
 		})
 
 		var patch = client.RawPatch(types.MergePatchType, []byte(`{"spec":{"replicas":1}}`))

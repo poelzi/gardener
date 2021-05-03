@@ -21,7 +21,6 @@ import (
 	"time"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
@@ -34,9 +33,9 @@ import (
 	"github.com/gardener/gardener/pkg/logger"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
+	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 
 	"github.com/prometheus/client_golang/prometheus"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
@@ -52,11 +51,10 @@ type Controller struct {
 	config                        *config.GardenletConfiguration
 	gardenClusterIdentity         string
 	identity                      *gardencorev1beta1.Gardener
-	careControl                   CareControlInterface
+	careReconciler                reconcile.Reconciler
 	controllerInstallationControl ControllerInstallationControlInterface
 	seedRegistrationControl       SeedRegistrationControlInterface
 	recorder                      record.EventRecorder
-	secrets                       map[string]*corev1.Secret
 	imageVector                   imagevector.ImageVector
 	shootReconciliationDueTracker *reconciliationDueTracker
 
@@ -70,9 +68,7 @@ type Controller struct {
 	shootSeedQueue              workqueue.RateLimitingInterface
 	seedRegistrationQueue       workqueue.RateLimitingInterface
 
-	controllerInstallationSynced cache.InformerSynced
-	seedSynced                   cache.InformerSynced
-	shootSynced                  cache.InformerSynced
+	hasSyncedFuncs []cache.InformerSynced
 
 	numberOfRunningWorkers int
 	workerCh               chan int
@@ -82,7 +78,7 @@ type Controller struct {
 // holding information about the acting Gardener, a <shootInformer>, and a <recorder> for
 // event recording. It creates a new Gardener controller.
 func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers gardencoreinformers.SharedInformerFactory, config *config.GardenletConfiguration, identity *gardencorev1beta1.Gardener,
-	gardenClusterIdentity string, secrets map[string]*corev1.Secret, imageVector imagevector.ImageVector, recorder record.EventRecorder) *Controller {
+	gardenClusterIdentity string, imageVector imagevector.ImageVector, recorder record.EventRecorder) *Controller {
 	var (
 		gardenCoreV1beta1Informer = k8sGardenCoreInformers.Core().V1beta1()
 
@@ -103,11 +99,10 @@ func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers ga
 		config:                        config,
 		identity:                      identity,
 		gardenClusterIdentity:         gardenClusterIdentity,
-		careControl:                   NewDefaultCareControl(clientMap, gardenCoreV1beta1Informer, secrets, imageVector, identity, gardenClusterIdentity, config),
+		careReconciler:                NewCareReconciler(clientMap, gardenCoreV1beta1Informer, imageVector, identity, gardenClusterIdentity, config),
 		controllerInstallationControl: NewDefaultControllerInstallationControl(clientMap, gardenCoreV1beta1Informer, recorder),
-		seedRegistrationControl:       NewDefaultSeedRegistrationControl(clientMap, gardenCoreV1beta1Informer, imageVector, config, recorder),
+		seedRegistrationControl:       NewDefaultSeedRegistrationControl(clientMap, recorder, logger.Logger),
 		recorder:                      recorder,
-		secrets:                       secrets,
 		imageVector:                   imageVector,
 		shootReconciliationDueTracker: newReconciliationDueTracker(),
 
@@ -154,14 +149,16 @@ func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers ga
 	shootInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controllerutils.ShootFilterFunc(confighelper.SeedNameFromSeedConfig(config.SeedConfig), seedLister, config.SeedSelector),
 		Handler: cache.ResourceEventHandlerFuncs{
-			AddFunc:    func(obj interface{}) { shootController.seedRegistrationAdd(obj, false) },
+			AddFunc:    shootController.seedRegistrationAdd,
 			UpdateFunc: shootController.seedRegistrationUpdate,
 		},
 	})
 
-	shootController.controllerInstallationSynced = controllerInstallationInformer.Informer().HasSynced
-	shootController.seedSynced = seedInformer.Informer().HasSynced
-	shootController.shootSynced = shootInformer.Informer().HasSynced
+	shootController.hasSyncedFuncs = []cache.InformerSynced{
+		controllerInstallationInformer.Informer().HasSynced,
+		seedInformer.Informer().HasSynced,
+		shootInformer.Informer().HasSynced,
+	}
 
 	return shootController
 }
@@ -170,7 +167,7 @@ func NewShootController(clientMap clientmap.ClientMap, k8sGardenCoreInformers ga
 func (c *Controller) Run(ctx context.Context, shootWorkers, shootCareWorkers int) {
 	var waitGroup sync.WaitGroup
 
-	if !cache.WaitForCacheSync(ctx.Done(), c.controllerInstallationSynced, c.seedSynced, c.shootSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.hasSyncedFuncs...) {
 		logger.Logger.Error("Timed out waiting for caches to sync")
 		return
 	}
@@ -216,7 +213,7 @@ func (c *Controller) Run(ctx context.Context, shootWorkers, shootCareWorkers int
 		controllerutils.CreateWorker(ctx, c.shootQueue, "Shoot", reconcile.Func(c.reconcileShootRequest), &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootCareWorkers; i++ {
-		controllerutils.DeprecatedCreateWorker(ctx, c.shootCareQueue, "Shoot Care", c.reconcileShootCareKey, &waitGroup, c.workerCh)
+		controllerutils.CreateWorker(ctx, c.shootCareQueue, "Shoot Care", c.careReconciler, &waitGroup, c.workerCh)
 	}
 	for i := 0; i < shootWorkers/2+1; i++ {
 		controllerutils.CreateWorker(ctx, c.shootSeedQueue, "Shooted Seeds Reconciliation", reconcile.Func(c.reconcileShootRequest), &waitGroup, c.workerCh)
@@ -268,7 +265,9 @@ func (c *Controller) CollectMetrics(ch chan<- prometheus.Metric) {
 }
 
 func (c *Controller) getShootQueue(obj interface{}) workqueue.RateLimitingInterface {
-	if shoot, ok := obj.(*gardencorev1beta1.Shoot); ok && shootIsSeed(shoot) {
+	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+	defer cancel()
+	if shoot, ok := obj.(*gardencorev1beta1.Shoot); ok && c.shootIsSeed(ctx, shoot) {
 		return c.shootSeedQueue
 	}
 	return c.shootQueue
@@ -281,7 +280,14 @@ func (c *Controller) newProgressReporter(reporterFn flow.ProgressReporterFn) flo
 	return flow.NewImmediateProgressReporter(reporterFn)
 }
 
-func shootIsSeed(shoot *gardencorev1beta1.Shoot) bool {
-	shootedSeed, err := gardencorev1beta1helper.ReadShootedSeed(shoot)
-	return err == nil && shootedSeed != nil
+func (c *Controller) shootIsSeed(ctx context.Context, shoot *gardencorev1beta1.Shoot) bool {
+	gardenClient, err := c.clientMap.GetClient(ctx, keys.ForGarden())
+	if err != nil {
+		return false
+	}
+	managedSeed, err := kutil.GetManagedSeed(ctx, gardenClient.GardenSeedManagement(), shoot.Namespace, shoot.Name)
+	if err != nil {
+		return false
+	}
+	return managedSeed != nil
 }

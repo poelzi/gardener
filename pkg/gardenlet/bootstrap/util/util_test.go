@@ -20,6 +20,7 @@ import (
 	"crypto/x509/pkix"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
@@ -30,20 +31,19 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/keyutil"
 	bootstraptokenapi "k8s.io/cluster-bootstrap/token/api"
+	bootstraptokenutil "k8s.io/cluster-bootstrap/token/util"
 	baseconfig "k8s.io/component-base/config"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
+	gardencore "github.com/gardener/gardener/pkg/apis/core"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/gardenlet/apis/config"
-	. "github.com/gardener/gardener/pkg/gardenlet/bootstrap"
 	bootstraputil "github.com/gardener/gardener/pkg/gardenlet/bootstrap/util"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
+	"github.com/gardener/gardener/pkg/utils"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
@@ -150,7 +150,7 @@ var _ = Describe("Util", func() {
 					CAFile:   "filepath",
 				}}
 
-				expectedKubeconfig, err := bootstraputil.MarshalKubeconfigWithClientCertificate(certClientConfig, nil, nil)
+				expectedKubeconfig, err := bootstraputil.CreateGardenletKubeconfigWithClientCertificate(certClientConfig, nil, nil)
 				Expect(err).ToNot(HaveOccurred())
 
 				expectedSecret := &corev1.Secret{
@@ -174,78 +174,155 @@ var _ = Describe("Util", func() {
 			})
 		})
 
-		Describe("#DeleteBootstrapAuth", func() {
+		Describe("#ComputeGardenletKubeconfigWithBootstrapToken", func() {
 			var (
-				csrName = "csr-name"
-				csrKey  = kutil.Key(csrName)
+				restConfig = &rest.Config{
+					Host: "apiserver.dummy",
+				}
+				seedName                 = "sweet-seed"
+				description              = "some"
+				validity                 = 24 * time.Hour
+				tokenID                  = utils.ComputeSHA256Hex([]byte(seedName))[:6]
+				bootstrapTokenSecretName = bootstraptokenutil.BootstrapTokenSecretName(tokenID)
+				timestampInTheFuture     = time.Now().UTC().Add(15 * time.Hour).Format(time.RFC3339)
+				timestampInThePast       = time.Now().UTC().Add(-15 * time.Hour).Format(time.RFC3339)
 			)
 
-			It("should return an error because the CSR was not found", func() {
-				c.EXPECT().
-					Get(ctx, csrKey, gomock.AssignableToTypeOf(&certificatesv1.CertificateSigningRequest{})).
-					Return(apierrors.NewNotFound(schema.GroupResource{Resource: "CertificateSigningRequests"}, csrName))
+			It("should successfully refresh the bootstrap token", func() {
+				// There are 3 calls requesting the same secret in the code. This can be improved.
+				// However it is not critical as bootstrap token generation does not happen too frequently
+				c.EXPECT().Get(ctx, kutil.Key(metav1.NamespaceSystem, bootstrapTokenSecretName), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, s *corev1.Secret) error {
+					s.Data = map[string][]byte{
+						bootstraptokenapi.BootstrapTokenExpirationKey: []byte(timestampInThePast),
+					}
+					return nil
+				})
+				c.EXPECT().Get(ctx, kutil.Key(metav1.NamespaceSystem, bootstrapTokenSecretName), gomock.AssignableToTypeOf(&corev1.Secret{})).Return(nil).Times(2)
 
-				Expect(DeleteBootstrapAuth(ctx, c, csrName, "")).NotTo(Succeed())
+				c.EXPECT().Update(ctx, gomock.Any()).DoAndReturn(func(_ context.Context, s *corev1.Secret) error {
+					Expect(s.Name).To(Equal(bootstrapTokenSecretName))
+					Expect(s.Namespace).To(Equal(metav1.NamespaceSystem))
+					Expect(s.Type).To(Equal(bootstraptokenapi.SecretTypeBootstrapToken))
+					Expect(s.Data).ToNot(BeNil())
+					Expect(s.Data[bootstraptokenapi.BootstrapTokenDescriptionKey]).ToNot(BeNil())
+					Expect(s.Data[bootstraptokenapi.BootstrapTokenIDKey]).To(Equal([]byte(tokenID)))
+					Expect(s.Data[bootstraptokenapi.BootstrapTokenSecretKey]).ToNot(BeNil())
+					Expect(s.Data[bootstraptokenapi.BootstrapTokenExpirationKey]).ToNot(BeNil())
+					Expect(s.Data[bootstraptokenapi.BootstrapTokenUsageAuthentication]).To(Equal([]byte("true")))
+					Expect(s.Data[bootstraptokenapi.BootstrapTokenUsageSigningKey]).To(Equal([]byte("true")))
+					return nil
+				})
+
+				kubeconfig, err := bootstraputil.ComputeGardenletKubeconfigWithBootstrapToken(ctx, c, restConfig, tokenID, description, validity)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(kubeconfig).ToNot(BeNil())
+
+				rest, err := kubernetes.RESTConfigFromKubeconfig(kubeconfig)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(rest.Host).To(Equal(restConfig.Host))
 			})
 
-			It("should delete nothing because the username in the CSR does not match a known pattern", func() {
-				c.EXPECT().
-					Get(ctx, csrKey, gomock.AssignableToTypeOf(&certificatesv1.CertificateSigningRequest{})).
-					Return(nil)
+			It("should reuse existing bootstrap token", func() {
+				c.EXPECT().Get(ctx, kutil.Key(metav1.NamespaceSystem, bootstrapTokenSecretName), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, s *corev1.Secret) error {
+					s.Data = map[string][]byte{
+						bootstraptokenapi.BootstrapTokenExpirationKey: []byte(timestampInTheFuture),
+						bootstraptokenapi.BootstrapTokenIDKey:         []byte("dummy"),
+						bootstraptokenapi.BootstrapTokenSecretKey:     []byte(bootstrapTokenSecretName),
+					}
+					return nil
+				})
 
-				Expect(DeleteBootstrapAuth(ctx, c, csrName, "")).To(Succeed())
+				kubeconfig, err := bootstraputil.ComputeGardenletKubeconfigWithBootstrapToken(ctx, c, restConfig, tokenID, description, validity)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(kubeconfig).ToNot(BeNil())
+
+				rest, err := kubernetes.RESTConfigFromKubeconfig(kubeconfig)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(rest.Host).To(Equal(restConfig.Host))
+			})
+		})
+
+		Describe("#ComputeGardenletKubeconfigWithServiceAccountToken", func() {
+			var (
+				restConfig = &rest.Config{
+					Host: "apiserver.dummy",
+				}
+				serviceAccountName       = "gardenlet"
+				serviceAccountSecretName = "service-account-secret"
+			)
+
+			It("should fail because the service account token controller has not yet created a secret for the service account", func() {
+				c.EXPECT().Get(ctx, kutil.Key("garden", serviceAccountName), gomock.AssignableToTypeOf(&corev1.ServiceAccount{})).Return(apierrors.NewNotFound(schema.GroupResource{}, serviceAccountSecretName))
+
+				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&corev1.ServiceAccount{})).DoAndReturn(func(_ context.Context, s *corev1.ServiceAccount) error {
+					s.Name = serviceAccountName
+					s.Namespace = "garden"
+					s.Secrets = []corev1.ObjectReference{}
+					return nil
+				})
+
+				_, err := bootstraputil.ComputeGardenletKubeconfigWithServiceAccountToken(ctx, c, restConfig, serviceAccountName)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("service account token controller has not yet created a secret for the service account"))
 			})
 
-			It("should delete the bootstrap token secret", func() {
-				var (
-					bootstrapTokenID         = "12345"
-					bootstrapTokenSecretName = "bootstrap-token-" + bootstrapTokenID
-					bootstrapTokenUserName   = bootstraptokenapi.BootstrapUserPrefix + bootstrapTokenID
-					bootstrapTokenSecret     = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceSystem, Name: bootstrapTokenSecretName}}
-				)
+			It("should succeed", func() {
+				c.EXPECT().Get(ctx, kutil.Key("garden", serviceAccountName), gomock.AssignableToTypeOf(&corev1.ServiceAccount{})).Return(apierrors.NewNotFound(schema.GroupResource{}, serviceAccountSecretName))
 
-				gomock.InOrder(
-					c.EXPECT().
-						Get(ctx, csrKey, gomock.AssignableToTypeOf(&certificatesv1.CertificateSigningRequest{})).
-						DoAndReturn(func(_ context.Context, _ client.ObjectKey, csr *certificatesv1.CertificateSigningRequest) error {
-							csr.Spec.Username = bootstrapTokenUserName
-							return nil
-						}),
+				// create service account
+				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&corev1.ServiceAccount{})).DoAndReturn(func(_ context.Context, s *corev1.ServiceAccount) error {
+					Expect(s.Name).To(Equal(serviceAccountName))
+					Expect(s.Namespace).To(Equal("garden"))
+					s.Secrets = []corev1.ObjectReference{
+						{
+							Name: serviceAccountSecretName,
+						},
+					}
+					return nil
+				})
 
-					c.EXPECT().
-						Delete(ctx, bootstrapTokenSecret),
-				)
+				// mock existing service account secret
+				c.EXPECT().Get(ctx, kutil.Key("garden", serviceAccountSecretName), gomock.AssignableToTypeOf(&corev1.Secret{})).DoAndReturn(func(_ context.Context, _ client.ObjectKey, s *corev1.Secret) error {
+					s.Data = map[string][]byte{
+						"token": []byte("tokenizer"),
+					}
+					return nil
+				})
 
-				Expect(DeleteBootstrapAuth(ctx, c, csrName, "")).To(Succeed())
-			})
+				// create cluster role binding
+				clusterRoleBinding := &rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: fmt.Sprintf("gardener.cloud:system:seed-bootstrapper:%s", serviceAccountName),
+					},
+				}
+				c.EXPECT().Get(ctx, kutil.Key(clusterRoleBinding.Name), gomock.AssignableToTypeOf(&rbacv1.ClusterRoleBinding{})).Return(apierrors.NewNotFound(schema.GroupResource{}, clusterRoleBinding.Name))
 
-			It("should delete the service account and cluster role binding", func() {
-				var (
-					seedName                = "foo"
-					serviceAccountName      = "foo"
-					serviceAccountNamespace = v1beta1constants.GardenNamespace
-					serviceAccountUserName  = serviceaccount.MakeUsername(serviceAccountNamespace, serviceAccountName)
-					serviceAccount          = &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: serviceAccountNamespace, Name: serviceAccountName}}
+				c.EXPECT().Create(ctx, gomock.AssignableToTypeOf(&rbacv1.ClusterRoleBinding{})).DoAndReturn(func(_ context.Context, s *rbacv1.ClusterRoleBinding) error {
+					expectedClusterRoleBinding := clusterRoleBinding
+					expectedClusterRoleBinding.RoleRef = rbacv1.RoleRef{
+						APIGroup: "rbac.authorization.k8s.io",
+						Kind:     "ClusterRole",
+						Name:     "gardener.cloud:system:seed-bootstrapper",
+					}
+					expectedClusterRoleBinding.Subjects = []rbacv1.Subject{
+						{
+							Kind:      "ServiceAccount",
+							Name:      serviceAccountName,
+							Namespace: "garden",
+						},
+					}
 
-					clusterRoleBinding = &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: bootstraputil.BuildBootstrapperName(seedName)}}
-				)
+					Expect(s).To(Equal(expectedClusterRoleBinding))
+					return nil
+				})
 
-				gomock.InOrder(
-					c.EXPECT().
-						Get(ctx, csrKey, gomock.AssignableToTypeOf(&certificatesv1.CertificateSigningRequest{})).
-						DoAndReturn(func(_ context.Context, _ client.ObjectKey, csr *certificatesv1.CertificateSigningRequest) error {
-							csr.Spec.Username = serviceAccountUserName
-							return nil
-						}),
+				kubeconfig, err := bootstraputil.ComputeGardenletKubeconfigWithServiceAccountToken(ctx, c, restConfig, serviceAccountName)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(kubeconfig).ToNot(BeNil())
 
-					c.EXPECT().
-						Delete(ctx, serviceAccount),
-
-					c.EXPECT().
-						Delete(ctx, clusterRoleBinding),
-				)
-
-				Expect(DeleteBootstrapAuth(ctx, c, csrName, seedName)).To(Succeed())
+				rest, err := kubernetes.RESTConfigFromKubeconfig(kubeconfig)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(rest.Host).To(Equal(restConfig.Host))
 			})
 		})
 	})
@@ -261,15 +338,17 @@ var _ = Describe("Util", func() {
 	Describe("GetSeedName", func() {
 		It("should return the configured name", func() {
 			name := "test-name"
-			result := bootstraputil.GetSeedName(&config.SeedConfig{Seed: gardencorev1beta1.Seed{
-				ObjectMeta: metav1.ObjectMeta{Name: name},
-			}})
+			result := bootstraputil.GetSeedName(&config.SeedConfig{
+				SeedTemplate: gardencore.SeedTemplate{
+					ObjectMeta: metav1.ObjectMeta{Name: name},
+				},
+			})
 			Expect(result).To(Equal("test-name"))
 		})
 
 		It("should return the default name", func() {
 			result := bootstraputil.GetSeedName(nil)
-			Expect(result).To(Equal(bootstraputil.DefaultSeedName))
+			Expect(result).To(Equal("<ambiguous>"))
 		})
 	})
 

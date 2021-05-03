@@ -51,15 +51,26 @@ type ManagedSeedList struct {
 	Items []ManagedSeed `json:"items" protobuf:"bytes,2,rep,name=items"`
 }
 
+// ManagedSeedTemplate is a template for creating a ManagedSeed object.
+type ManagedSeedTemplate struct {
+	// Standard object metadata.
+	// +optional
+	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
+	// Specification of the desired behavior of the ManagedSeed.
+	// +optional
+	Spec ManagedSeedSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
+}
+
 // ManagedSeedSpec is the specification of a ManagedSeed.
 type ManagedSeedSpec struct {
 	// Shoot references a Shoot that should be registered as Seed.
-	Shoot Shoot `json:"shoot" protobuf:"bytes,1,opt,name=shoot"`
+	// +optional
+	Shoot *Shoot `json:"shoot,omitempty" protobuf:"bytes,1,opt,name=shoot"`
 	// SeedTemplate is a template for a Seed object, that should be used to register a given cluster as a Seed.
 	// Either SeedTemplate or Gardenlet must be specified. When Seed is specified, the ManagedSeed controller will not deploy a gardenlet into the cluster
 	// and an existing gardenlet reconciling the new Seed is required.
 	// +optional
-	SeedTemplate *SeedTemplate `json:"seedTemplate,omitempty" protobuf:"bytes,2,opt,name=seedTemplate"`
+	SeedTemplate *gardencorev1beta1.SeedTemplate `json:"seedTemplate,omitempty" protobuf:"bytes,2,opt,name=seedTemplate"`
 	// Gardenlet specifies that the ManagedSeed controller should deploy a gardenlet into the cluster
 	// with the given deployment parameters and GardenletConfiguration.
 	// +optional
@@ -72,16 +83,6 @@ type Shoot struct {
 	Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
 }
 
-// SeedTemplate is a template for creating a Seed object, when registering a cluster as a ManagedSeed.
-type SeedTemplate struct {
-	// Standard object metadata.
-	// +optional
-	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
-	// Specification of the desired behavior of the Seed.
-	// +optional
-	Spec gardencorev1beta1.SeedSpec `json:"spec,omitempty" protobuf:"bytes,2,opt,name=spec"`
-}
-
 // Gardenlet specifies gardenlet deployment parameters and the GardenletConfiguration used to configure gardenlet.
 type Gardenlet struct {
 	// Deployment specifies certain gardenlet deployment parameters, such as the number of replicas,
@@ -90,14 +91,14 @@ type Gardenlet struct {
 	Deployment *GardenletDeployment `json:"deployment,omitempty" protobuf:"bytes,1,opt,name=deployment"`
 	// Config is the GardenletConfiguration used to configure gardenlet.
 	// +optional
-	Config *runtime.RawExtension `json:"config,omitempty" protobuf:"bytes,2,opt,name=config"`
+	Config runtime.RawExtension `json:"config,omitempty" protobuf:"bytes,2,opt,name=config"`
 	// Bootstrap is the mechanism that should be used for bootstrapping gardenlet connection to the Garden cluster. One of ServiceAccount, BootstrapToken, None.
 	// If set to ServiceAccount or BootstrapToken, a service account or a bootstrap token will be created in the garden cluster and used to compute the bootstrap kubeconfig.
 	// If set to None, the gardenClientConnection.kubeconfig field will be used to connect to the Garden cluster. Defaults to BootstrapToken.
 	// +optional
 	Bootstrap *Bootstrap `json:"bootstrap,omitempty" protobuf:"bytes,3,opt,name=bootstrap"`
-	// MergeWithParent specifies whether the deployment parameters and GardenletConfiguration of the parent gardenlet
-	// should be merged with the specified deployment parameters and GardenletConfiguration. Defaults to true.
+	// MergeWithParent specifies whether the GardenletConfiguration of the parent gardenlet
+	// should be merged with the specified GardenletConfiguration. Defaults to true.
 	// +optional
 	MergeWithParent *bool `json:"mergeWithParent,omitempty" protobuf:"varint,4,opt,name=mergeWithParent"`
 }
@@ -180,8 +181,6 @@ type ManagedSeedStatus struct {
 }
 
 const (
-	// ManagedSeedShootExists is a condition type for indicating whether the ManagedSeed's shoot exists.
-	ManagedSeedShootExists gardencorev1beta1.ConditionType = "ShootExists"
 	// ManagedSeedShootReconciled is a condition type for indicating whether the ManagedSeed's shoot has been reconciled.
 	ManagedSeedShootReconciled gardencorev1beta1.ConditionType = "ShootReconciled"
 	// ManagedSeedSeedRegistered is a condition type for indicating whether the ManagedSeed's seed has been registered,

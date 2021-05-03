@@ -19,20 +19,20 @@ import (
 	"testing"
 
 	extensionscontroller "github.com/gardener/gardener/extensions/pkg/controller"
+	mockgenericactuator "github.com/gardener/gardener/extensions/pkg/controller/controlplane/genericactuator/mock"
+	mockextensionscontroller "github.com/gardener/gardener/extensions/pkg/controller/mock"
 	extensionswebhookshoot "github.com/gardener/gardener/extensions/pkg/webhook/shoot"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	mockchartrenderer "github.com/gardener/gardener/pkg/chartrenderer/mock"
+	mockkubernetes "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockchartrenderer "github.com/gardener/gardener/pkg/mock/gardener/chartrenderer"
-	mockkubernetes "github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
-	mockextensionscontroller "github.com/gardener/gardener/pkg/mock/gardener/extensions/controller"
-	mockgenericactuator "github.com/gardener/gardener/pkg/mock/gardener/extensions/controller/controlplane/genericactuator"
-	mockchartutil "github.com/gardener/gardener/pkg/mock/gardener/utils/chart"
-	mocksecretsutil "github.com/gardener/gardener/pkg/mock/gardener/utils/secrets"
 	"github.com/gardener/gardener/pkg/utils/chart"
+	mockchartutil "github.com/gardener/gardener/pkg/utils/chart/mocks"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
+	mocksecretsutil "github.com/gardener/gardener/pkg/utils/secrets/mock"
 
 	resourcesv1alpha1 "github.com/gardener/gardener-resource-manager/pkg/apis/resources/v1alpha1"
 	"github.com/golang/mock/gomock"
@@ -44,7 +44,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -58,8 +57,8 @@ const (
 	chartName               = "chartName"
 	renderedContent         = "renderedContent"
 
-	seedVersion  = "1.13.0"
-	shootVersion = "1.14.0"
+	seedVersion  = "1.15.0"
+	shootVersion = "1.16.0"
 )
 
 var (
@@ -81,10 +80,7 @@ var _ = Describe("Actuator", func() {
 		providerType      = "test"
 		webhookServerPort = 443
 
-		cp = &extensionsv1alpha1.ControlPlane{
-			ObjectMeta: metav1.ObjectMeta{Name: "control-plane", Namespace: namespace},
-			Spec:       extensionsv1alpha1.ControlPlaneSpec{},
-		}
+		cp         *extensionsv1alpha1.ControlPlane
 		cpExposure = &extensionsv1alpha1.ControlPlane{
 			ObjectMeta: metav1.ObjectMeta{Name: "control-plane-exposure", Namespace: namespace},
 			Spec: extensionsv1alpha1.ControlPlaneSpec{
@@ -138,7 +134,7 @@ var _ = Describe("Actuator", func() {
 				SecretRefs: []corev1.LocalObjectReference{
 					{Name: ControlPlaneShootChartResourceName},
 				},
-				InjectLabels:              map[string]string{extensionscontroller.ShootNoCleanupLabel: "true"},
+				InjectLabels:              map[string]string{v1beta1constants.ShootNoCleanup: "true"},
 				KeepObjects:               pFalse,
 				ForceOverwriteAnnotations: pFalse,
 			},
@@ -146,8 +142,32 @@ var _ = Describe("Actuator", func() {
 		deletedMRSecretForCPShootChart = &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneShootChartResourceName, Namespace: namespace},
 		}
-		deleteMRForCPShootChart = &resourcesv1alpha1.ManagedResource{
+		deletedMRForCPShootChart = &resourcesv1alpha1.ManagedResource{
 			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneShootChartResourceName, Namespace: namespace},
+		}
+
+		resourceKeyCPShootCRDsChart        = client.ObjectKey{Namespace: namespace, Name: ControlPlaneShootCRDsChartResourceName}
+		createdMRSecretForCPShootCRDsChart = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneShootCRDsChartResourceName, Namespace: namespace},
+			Data:       map[string][]byte{chartName: []byte(renderedContent)},
+			Type:       corev1.SecretTypeOpaque,
+		}
+		createdMRForCPShootCRDsChart = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneShootCRDsChartResourceName, Namespace: namespace},
+			Spec: resourcesv1alpha1.ManagedResourceSpec{
+				SecretRefs: []corev1.LocalObjectReference{
+					{Name: ControlPlaneShootCRDsChartResourceName},
+				},
+				InjectLabels:              map[string]string{v1beta1constants.ShootNoCleanup: "true"},
+				KeepObjects:               pFalse,
+				ForceOverwriteAnnotations: pFalse,
+			},
+		}
+		deletedMRSecretForCPShootCRDsChart = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneShootCRDsChartResourceName, Namespace: namespace},
+		}
+		deletedMRForCPShootCRDsChart = &resourcesv1alpha1.ManagedResource{
+			ObjectMeta: metav1.ObjectMeta{Name: ControlPlaneShootCRDsChartResourceName, Namespace: namespace},
 		}
 
 		resourceKeyStorageClassesChart        = client.ObjectKey{Namespace: namespace, Name: StorageClassesChartResourceName}
@@ -162,7 +182,7 @@ var _ = Describe("Actuator", func() {
 				SecretRefs: []corev1.LocalObjectReference{
 					{Name: StorageClassesChartResourceName},
 				},
-				InjectLabels:              map[string]string{extensionscontroller.ShootNoCleanupLabel: "true"},
+				InjectLabels:              map[string]string{v1beta1constants.ShootNoCleanup: "true"},
 				KeepObjects:               pFalse,
 				ForceOverwriteAnnotations: pTrue,
 			},
@@ -170,7 +190,7 @@ var _ = Describe("Actuator", func() {
 		deletedMRSecretForStorageClassesChart = &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: StorageClassesChartResourceName, Namespace: namespace},
 		}
-		deleteMRForStorageClassesChart = &resourcesv1alpha1.ManagedResource{
+		deletedMRForStorageClassesChart = &resourcesv1alpha1.ManagedResource{
 			ObjectMeta: metav1.ObjectMeta{Name: StorageClassesChartResourceName, Namespace: namespace},
 		}
 
@@ -223,6 +243,10 @@ var _ = Describe("Actuator", func() {
 			"foo": "bar",
 		}
 
+		controlPlaneShootCRDsChartValues = map[string]interface{}{
+			"foo": "bar",
+		}
+
 		storageClassesChartValues = map[string]interface{}{
 			"foo": "bar",
 		}
@@ -237,6 +261,11 @@ var _ = Describe("Actuator", func() {
 
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
+
+		cp = &extensionsv1alpha1.ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "control-plane", Namespace: namespace},
+			Spec:       extensionsv1alpha1.ControlPlaneSpec{},
+		}
 	})
 
 	AfterEach(func() {
@@ -244,7 +273,7 @@ var _ = Describe("Actuator", func() {
 	})
 
 	DescribeTable("#Reconcile",
-		func(configName string, checksums map[string]string, webhooks []admissionregistrationv1beta1.MutatingWebhook) {
+		func(configName string, checksums map[string]string, webhooks []admissionregistrationv1beta1.MutatingWebhook, withShootCRDsChart bool) {
 			// Create mock client
 			client := mockclient.NewMockClient(ctrl)
 
@@ -274,6 +303,13 @@ var _ = Describe("Actuator", func() {
 			client.EXPECT().Get(ctx, resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(errNotFound)
 			client.EXPECT().Create(ctx, createdMRForCPShootChart).Return(nil)
 
+			if withShootCRDsChart {
+				client.EXPECT().Get(ctx, resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&corev1.Secret{})).Return(errNotFound)
+				client.EXPECT().Create(ctx, createdMRSecretForCPShootCRDsChart).Return(nil)
+				client.EXPECT().Get(ctx, resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(errNotFound)
+				client.EXPECT().Create(ctx, createdMRForCPShootCRDsChart).Return(nil)
+			}
+
 			client.EXPECT().Get(ctx, resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&corev1.Secret{})).Return(errNotFound)
 			client.EXPECT().Create(ctx, createdMRSecretForStorageClassesChart).Return(nil)
 			client.EXPECT().Get(ctx, resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(errNotFound)
@@ -294,14 +330,20 @@ var _ = Describe("Actuator", func() {
 			secrets.EXPECT().Deploy(ctx, gomock.Any(), gardenerClientset, namespace).Return(deployedSecrets, nil)
 			var configChart chart.Interface
 			if configName != "" {
-				cc := mockchartutil.NewMockInterface(ctrl)
-				cc.EXPECT().Apply(ctx, chartApplier, namespace, nil, "", "", configChartValues).Return(nil)
-				configChart = cc
+				configChartMock := mockchartutil.NewMockInterface(ctrl)
+				configChartMock.EXPECT().Apply(ctx, chartApplier, namespace, nil, "", "", configChartValues).Return(nil)
+				configChart = configChartMock
 			}
 			ccmChart := mockchartutil.NewMockInterface(ctrl)
 			ccmChart.EXPECT().Apply(ctx, chartApplier, namespace, imageVector, seedVersion, shootVersion, controlPlaneChartValues).Return(nil)
 			ccmShootChart := mockchartutil.NewMockInterface(ctrl)
 			ccmShootChart.EXPECT().Render(chartRenderer, metav1.NamespaceSystem, imageVector, shootVersion, shootVersion, controlPlaneShootChartValues).Return(chartName, []byte(renderedContent), nil)
+			var cpShootCRDsChart chart.Interface
+			if withShootCRDsChart {
+				cpShootCRDsChartMock := mockchartutil.NewMockInterface(ctrl)
+				cpShootCRDsChartMock.EXPECT().Render(chartRenderer, metav1.NamespaceSystem, imageVector, shootVersion, shootVersion, controlPlaneShootCRDsChartValues).Return(chartName, []byte(renderedContent), nil)
+				cpShootCRDsChart = cpShootCRDsChartMock
+			}
 			storageClassesChart := mockchartutil.NewMockInterface(ctrl)
 			storageClassesChart.EXPECT().Render(chartRenderer, metav1.NamespaceSystem, imageVector, shootVersion, shootVersion, storageClassesChartValues).Return(chartName, []byte(renderedContent), nil)
 
@@ -312,10 +354,13 @@ var _ = Describe("Actuator", func() {
 			}
 			vp.EXPECT().GetControlPlaneChartValues(ctx, cp, cluster, checksums, false).Return(controlPlaneChartValues, nil)
 			vp.EXPECT().GetControlPlaneShootChartValues(ctx, cp, cluster, checksums).Return(controlPlaneShootChartValues, nil)
+			if withShootCRDsChart {
+				vp.EXPECT().GetControlPlaneShootCRDsChartValues(ctx, cp, cluster).Return(controlPlaneShootCRDsChartValues, nil)
+			}
 			vp.EXPECT().GetStorageClassesChartValues(ctx, cp, cluster).Return(storageClassesChartValues, nil)
 
 			// Create actuator
-			a := NewActuator(providerName, secrets, nil, configChart, ccmChart, ccmShootChart, storageClassesChart, nil, vp, crf, imageVector, configName, webhooks, webhookServerPort, logger)
+			a := NewActuator(providerName, secrets, nil, configChart, ccmChart, ccmShootChart, cpShootCRDsChart, storageClassesChart, nil, vp, crf, imageVector, configName, webhooks, webhookServerPort, logger)
 			err := a.(inject.Client).InjectClient(client)
 			Expect(err).NotTo(HaveOccurred())
 			a.(*actuator).gardenerClientset = gardenerClientset
@@ -326,33 +371,42 @@ var _ = Describe("Actuator", func() {
 			Expect(requeue).To(Equal(false))
 			Expect(err).NotTo(HaveOccurred())
 		},
-		Entry("should deploy secrets and apply charts with correct parameters", cloudProviderConfigName, checksums, []admissionregistrationv1beta1.MutatingWebhook{{}}),
-		Entry("should deploy secrets and apply charts with correct parameters (no config)", "", checksumsNoConfig, []admissionregistrationv1beta1.MutatingWebhook{{}}),
-		Entry("should deploy secrets and apply charts with correct parameters (no webhook)", cloudProviderConfigName, checksums, nil),
+		Entry("should deploy secrets and apply charts with correct parameters", cloudProviderConfigName, checksums, []admissionregistrationv1beta1.MutatingWebhook{{}}, true),
+		Entry("should deploy secrets and apply charts with correct parameters (no config)", "", checksumsNoConfig, []admissionregistrationv1beta1.MutatingWebhook{{}}, true),
+		Entry("should deploy secrets and apply charts with correct parameters (no webhook)", cloudProviderConfigName, checksums, nil, true),
+		Entry("should deploy secrets and apply charts with correct parameters (no shoot CRDs chart)", cloudProviderConfigName, checksums, []admissionregistrationv1beta1.MutatingWebhook{{}}, false),
 	)
 
 	DescribeTable("#Delete",
-		func(configName string, webhooks []admissionregistrationv1beta1.MutatingWebhook) {
+		func(configName string, webhooks []admissionregistrationv1beta1.MutatingWebhook, withShootCRDsChart bool) {
 			// Create mock clients
 			client := mockclient.NewMockClient(ctrl)
 
-			client.EXPECT().Delete(ctx, deleteMRForStorageClassesChart).Return(nil)
+			client.EXPECT().Delete(ctx, deletedMRForStorageClassesChart).Return(nil)
 			client.EXPECT().Delete(ctx, deletedMRSecretForStorageClassesChart).Return(nil)
+			var cpShootCRDsChart chart.Interface
+			if withShootCRDsChart {
+				cpShootCRDsChartMock := mockchartutil.NewMockInterface(ctrl)
+				cpShootCRDsChart = cpShootCRDsChartMock
+				client.EXPECT().Delete(ctx, deletedMRForCPShootCRDsChart).Return(nil)
+				client.EXPECT().Delete(ctx, deletedMRSecretForCPShootCRDsChart).Return(nil)
+				client.EXPECT().Get(gomock.Any(), resourceKeyCPShootCRDsChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForCPShootCRDsChart.Name))
+			}
 
-			client.EXPECT().Delete(ctx, deleteMRForCPShootChart).Return(nil)
+			client.EXPECT().Delete(ctx, deletedMRForCPShootChart).Return(nil)
 			client.EXPECT().Delete(ctx, deletedMRSecretForCPShootChart).Return(nil)
 
-			client.EXPECT().Get(gomock.Any(), resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deleteMRForStorageClassesChart.Name))
-			client.EXPECT().Get(gomock.Any(), resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deleteMRForCPShootChart.Name))
+			client.EXPECT().Get(gomock.Any(), resourceKeyStorageClassesChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForStorageClassesChart.Name))
+			client.EXPECT().Get(gomock.Any(), resourceKeyCPShootChart, gomock.AssignableToTypeOf(&resourcesv1alpha1.ManagedResource{})).Return(apierrors.NewNotFound(schema.GroupResource{}, deletedMRForCPShootChart.Name))
 
 			// Create mock secrets and charts
 			secrets := mocksecretsutil.NewMockInterface(ctrl)
 			secrets.EXPECT().Delete(ctx, gomock.Any(), namespace).Return(nil)
 			var configChart chart.Interface
 			if configName != "" {
-				cc := mockchartutil.NewMockInterface(ctrl)
-				cc.EXPECT().Delete(ctx, client, namespace).Return(nil)
-				configChart = cc
+				configChartMock := mockchartutil.NewMockInterface(ctrl)
+				configChartMock.EXPECT().Delete(ctx, client, namespace).Return(nil)
+				configChart = configChartMock
 			}
 			ccmChart := mockchartutil.NewMockInterface(ctrl)
 			ccmChart.EXPECT().Delete(ctx, client, namespace).Return(nil)
@@ -365,7 +419,7 @@ var _ = Describe("Actuator", func() {
 			}
 
 			// Create actuator
-			a := NewActuator(providerName, secrets, nil, configChart, ccmChart, nil, nil, nil, nil, nil, nil, configName, webhooks, webhookServerPort, logger)
+			a := NewActuator(providerName, secrets, nil, configChart, ccmChart, nil, cpShootCRDsChart, nil, nil, nil, nil, nil, configName, webhooks, webhookServerPort, logger)
 			err := a.(inject.Client).InjectClient(client)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -373,9 +427,10 @@ var _ = Describe("Actuator", func() {
 			err = a.Delete(ctx, cp, cluster)
 			Expect(err).NotTo(HaveOccurred())
 		},
-		Entry("should delete secrets and charts", cloudProviderConfigName, []admissionregistrationv1beta1.MutatingWebhook{{}}),
-		Entry("should delete secrets and charts (no config)", "", []admissionregistrationv1beta1.MutatingWebhook{{}}),
-		Entry("should delete secrets and charts (no webhook)", cloudProviderConfigName, []admissionregistrationv1beta1.MutatingWebhook{{}}),
+		Entry("should delete secrets and charts", cloudProviderConfigName, []admissionregistrationv1beta1.MutatingWebhook{{}}, true),
+		Entry("should delete secrets and charts (no config)", "", []admissionregistrationv1beta1.MutatingWebhook{{}}, true),
+		Entry("should delete secrets and charts (no webhook)", cloudProviderConfigName, nil, true),
+		Entry("should delete secrets and charts (no shoot CRDs chart)", cloudProviderConfigName, []admissionregistrationv1beta1.MutatingWebhook{{}}, false),
 	)
 
 	DescribeTable("#ReconcileExposure",
@@ -396,7 +451,7 @@ var _ = Describe("Actuator", func() {
 			vp.EXPECT().GetControlPlaneExposureChartValues(ctx, cpExposure, cluster, exposureChecksums).Return(controlPlaneExposureChartValues, nil)
 
 			// Create actuator
-			a := NewActuator(providerName, nil, exposureSecrets, nil, nil, nil, nil, cpExposureChart, vp, nil, imageVector, "", nil, 0, logger)
+			a := NewActuator(providerName, nil, exposureSecrets, nil, nil, nil, nil, nil, cpExposureChart, vp, nil, imageVector, "", nil, 0, logger)
 			a.(*actuator).gardenerClientset = gardenerClientset
 			a.(*actuator).chartApplier = chartApplier
 
@@ -421,7 +476,7 @@ var _ = Describe("Actuator", func() {
 			cpExposureChart.EXPECT().Delete(ctx, client, namespace).Return(nil)
 
 			// Create actuator
-			a := NewActuator(providerName, nil, exposureSecrets, nil, nil, nil, nil, cpExposureChart, nil, nil, nil, "", nil, 0, logger)
+			a := NewActuator(providerName, nil, exposureSecrets, nil, nil, nil, nil, nil, cpExposureChart, nil, nil, nil, "", nil, 0, logger)
 			err := a.(inject.Client).InjectClient(client)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -496,8 +551,8 @@ var _ = Describe("Actuator", func() {
 	})
 })
 
-func clientGet(result runtime.Object) interface{} {
-	return func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+func clientGet(result client.Object) interface{} {
+	return func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 		switch obj.(type) {
 		case *corev1.Secret:
 			*obj.(*corev1.Secret) = *result.(*corev1.Secret)

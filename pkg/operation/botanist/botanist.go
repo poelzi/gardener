@@ -25,10 +25,10 @@ import (
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
+	"github.com/gardener/gardener/pkg/extensions"
 	"github.com/gardener/gardener/pkg/operation"
-	"github.com/gardener/gardener/pkg/operation/botanist/clusteridentity"
-	"github.com/gardener/gardener/pkg/operation/botanist/controlplane/etcd"
-	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/clusteridentity"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/etcd"
 	shootpkg "github.com/gardener/gardener/pkg/operation/shoot"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 
@@ -39,8 +39,6 @@ import (
 const (
 	// DefaultInterval is the default interval for retry operations.
 	DefaultInterval = 5 * time.Second
-	// DefaultSevereThreshold  is the default threshold until an error reported by another component is treated as 'severe'.
-	DefaultSevereThreshold = 30 * time.Second
 )
 
 // New takes an operation object <o> and creates a new Botanist object. It checks whether the given Shoot DNS
@@ -55,8 +53,8 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 	// Determine all default domain secrets and check whether the used Shoot domain matches a default domain.
 	if o.Shoot != nil && o.Shoot.Info.Spec.DNS != nil && o.Shoot.Info.Spec.DNS.Domain != nil {
 		var (
-			prefix            = fmt.Sprintf("%s-", common.GardenRoleDefaultDomain)
-			defaultDomainKeys = o.GetSecretKeysOfRole(common.GardenRoleDefaultDomain)
+			prefix            = fmt.Sprintf("%s-", v1beta1constants.GardenRoleDefaultDomain)
+			defaultDomainKeys = o.GetSecretKeysOfRole(v1beta1constants.GardenRoleDefaultDomain)
 		)
 		sort.Slice(defaultDomainKeys, func(i, j int) bool { return len(defaultDomainKeys[i]) >= len(defaultDomainKeys[j]) })
 		for _, key := range defaultDomainKeys {
@@ -89,9 +87,16 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 	if err != nil {
 		return nil, err
 	}
-	o.Shoot.Components.Extensions.Extension = b.DefaultExtension(b.K8sSeedClient.DirectClient())
+	o.Shoot.Components.Extensions.Extension, err = b.DefaultExtension(ctx, b.K8sSeedClient.DirectClient())
+	if err != nil {
+		return nil, err
+	}
 	o.Shoot.Components.Extensions.Infrastructure = b.DefaultInfrastructure(b.K8sSeedClient.DirectClient())
 	o.Shoot.Components.Extensions.Network = b.DefaultNetwork(b.K8sSeedClient.DirectClient())
+	o.Shoot.Components.Extensions.OperatingSystemConfig, err = b.DefaultOperatingSystemConfig(b.K8sSeedClient.DirectClient())
+	if err != nil {
+		return nil, err
+	}
 	o.Shoot.Components.Extensions.Worker = b.DefaultWorker(b.K8sSeedClient.DirectClient())
 
 	sniPhase, err := b.SNIPhase(ctx)
@@ -119,7 +124,19 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 	if err != nil {
 		return nil, err
 	}
+	o.Shoot.Components.ControlPlane.ResourceManager, err = b.DefaultResourceManager()
+	if err != nil {
+		return nil, err
+	}
 	o.Shoot.Components.ControlPlane.ClusterAutoscaler, err = b.DefaultClusterAutoscaler()
+	if err != nil {
+		return nil, err
+	}
+	o.Shoot.Components.ControlPlane.KonnectivityServer, err = b.DefaultKonnectivityServer()
+	if err != nil {
+		return nil, err
+	}
+	o.Shoot.Components.ControlPlane.VPNSeedServer, err = b.DefaultVPNSeedServer()
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +151,10 @@ func New(ctx context.Context, o *operation.Operation) (*Botanist, error) {
 	// other components
 	o.Shoot.Components.BackupEntry = b.DefaultCoreBackupEntry(b.K8sGardenClient.DirectClient())
 	o.Shoot.Components.ClusterIdentity = clusteridentity.New(o.Shoot.Info.Status.ClusterIdentity, o.GardenClusterIdentity, o.Shoot.Info.Name, o.Shoot.Info.Namespace, o.Shoot.SeedNamespace, string(o.Shoot.Info.Status.UID), b.K8sGardenClient.DirectClient(), b.K8sSeedClient.DirectClient(), b.Logger)
+	o.Shoot.Components.NetworkPolicies, err = b.DefaultNetworkPolicies(sniPhase)
+	if err != nil {
+		return nil, err
+	}
 
 	return b, nil
 }
@@ -150,12 +171,7 @@ func (b *Botanist) RequiredExtensionsReady(ctx context.Context) error {
 		return err
 	}
 
-	var controllerRegistrations []*gardencorev1beta1.ControllerRegistration
-	for _, controllerRegistration := range controllerRegistrationList.Items {
-		controllerRegistrations = append(controllerRegistrations, controllerRegistration.DeepCopy())
-	}
-
-	requiredExtensions := shootpkg.ComputeRequiredExtensions(b.Shoot.Info, b.Seed.Info, controllerRegistrations, b.Garden.InternalDomain, b.Shoot.ExternalDomain)
+	requiredExtensions := shootpkg.ComputeRequiredExtensions(b.Shoot.Info, b.Seed.Info, controllerRegistrationList, b.Garden.InternalDomain, b.Shoot.ExternalDomain)
 
 	for _, controllerInstallation := range controllerInstallationList.Items {
 		if controllerInstallation.Spec.SeedRef.Name != b.Seed.Info.Name {
@@ -195,7 +211,7 @@ func (b *Botanist) UpdateShootAndCluster(ctx context.Context, shoot *gardencorev
 		return err
 	}
 
-	if err := common.SyncClusterResourceToSeed(ctx, b.K8sSeedClient.Client(), b.Shoot.SeedNamespace, shoot, nil, nil); err != nil {
+	if err := extensions.SyncClusterResourceToSeed(ctx, b.K8sSeedClient.Client(), b.Shoot.SeedNamespace, shoot, nil, nil); err != nil {
 		return err
 	}
 

@@ -20,11 +20,11 @@ import (
 
 	gardencorev1alpha1 "github.com/gardener/gardener/pkg/apis/core/v1alpha1"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
+	mockkubernetes "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	mockkubernetes "github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
-	mockshoot "github.com/gardener/gardener/pkg/mock/gardener/operation/shoot"
 	"github.com/gardener/gardener/pkg/operation"
 	. "github.com/gardener/gardener/pkg/operation/botanist"
+	mockinfrastructure "github.com/gardener/gardener/pkg/operation/botanist/component/extensions/infrastructure/mock"
 	shootpkg "github.com/gardener/gardener/pkg/operation/shoot"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 
@@ -33,14 +33,13 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/pointer"
 )
 
 var _ = Describe("Infrastructure", func() {
 	var (
 		ctrl           *gomock.Controller
-		infrastructure *mockshoot.MockExtensionInfrastructure
+		infrastructure *mockinfrastructure.MockInterface
 		botanist       *Botanist
 
 		ctx          = context.TODO()
@@ -51,7 +50,7 @@ var _ = Describe("Infrastructure", func() {
 
 	BeforeEach(func() {
 		ctrl = gomock.NewController(GinkgoT())
-		infrastructure = mockshoot.NewMockExtensionInfrastructure(ctrl)
+		infrastructure = mockinfrastructure.NewMockInterface(ctrl)
 		botanist = &Botanist{Operation: &operation.Operation{
 			Secrets: map[string]*corev1.Secret{
 				"ssh-keypair": {Data: map[string][]byte{"id_rsa.pub": sshPublicKey}},
@@ -118,11 +117,10 @@ var _ = Describe("Infrastructure", func() {
 			kubernetesSeedInterface   *mockkubernetes.MockInterface
 			kubernetesSeedClient      *mockclient.MockClient
 
-			namespace      = "namespace"
-			name           = "name"
-			providerStatus = &runtime.RawExtension{Raw: []byte(`{"some": "status"}"`)}
-			nodesCIDR      = pointer.StringPtr("1.2.3.4/5")
-			shoot          = &gardencorev1beta1.Shoot{
+			namespace = "namespace"
+			name      = "name"
+			nodesCIDR = pointer.StringPtr("1.2.3.4/5")
+			shoot     = &gardencorev1beta1.Shoot{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      name,
 					Namespace: namespace,
@@ -143,7 +141,6 @@ var _ = Describe("Infrastructure", func() {
 
 		It("should successfully wait (w/ provider status, w/ nodes cidr)", func() {
 			infrastructure.EXPECT().Wait(ctx)
-			infrastructure.EXPECT().ProviderStatus().Return(providerStatus)
 			infrastructure.EXPECT().NodesCIDR().Return(nodesCIDR)
 
 			kubernetesGardenInterface.EXPECT().DirectClient().Return(kubernetesGardenClient)
@@ -155,17 +152,14 @@ var _ = Describe("Infrastructure", func() {
 			kubernetesSeedInterface.EXPECT().Client().Return(kubernetesSeedClient)
 
 			Expect(botanist.WaitForInfrastructure(ctx)).To(Succeed())
-			Expect(botanist.Shoot.InfrastructureStatus).To(Equal(providerStatus.Raw))
 			Expect(botanist.Shoot.Info).To(Equal(updatedShoot))
 		})
 
 		It("should successfully wait (w/o provider status, w/o nodes cidr)", func() {
 			infrastructure.EXPECT().Wait(ctx)
-			infrastructure.EXPECT().ProviderStatus()
 			infrastructure.EXPECT().NodesCIDR()
 
 			Expect(botanist.WaitForInfrastructure(ctx)).To(Succeed())
-			Expect(botanist.Shoot.InfrastructureStatus).To(BeNil())
 			Expect(botanist.Shoot.Info).To(Equal(shoot))
 		})
 
@@ -173,13 +167,11 @@ var _ = Describe("Infrastructure", func() {
 			infrastructure.EXPECT().Wait(ctx).Return(fakeErr)
 
 			Expect(botanist.WaitForInfrastructure(ctx)).To(MatchError(fakeErr))
-			Expect(botanist.Shoot.InfrastructureStatus).To(BeNil())
 			Expect(botanist.Shoot.Info).To(Equal(shoot))
 		})
 
 		It("should return the error during nodes cidr update", func() {
 			infrastructure.EXPECT().Wait(ctx)
-			infrastructure.EXPECT().ProviderStatus()
 			infrastructure.EXPECT().NodesCIDR().Return(nodesCIDR)
 
 			kubernetesGardenInterface.EXPECT().DirectClient().Return(kubernetesGardenClient)
@@ -189,7 +181,6 @@ var _ = Describe("Infrastructure", func() {
 			kubernetesGardenClient.EXPECT().Update(ctx, updatedShoot).Return(fakeErr)
 
 			Expect(botanist.WaitForInfrastructure(ctx)).To(MatchError(fakeErr))
-			Expect(botanist.Shoot.InfrastructureStatus).To(BeNil())
 			Expect(botanist.Shoot.Info).To(Equal(shoot))
 		})
 	})

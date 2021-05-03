@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -57,7 +58,7 @@ func (c *Controller) shootReferenceUpdate(oldObj, newObj interface{}) {
 		newShoot = newObj.(*gardencorev1beta1.Shoot)
 	)
 
-	if c.refChange(oldShoot, newShoot) || newShoot.DeletionTimestamp != nil && !controllerutils.HasFinalizer(newShoot, gardencorev1beta1.GardenerName) {
+	if c.refChange(oldShoot, newShoot) || newShoot.DeletionTimestamp != nil && !controllerutil.ContainsFinalizer(newShoot, gardencorev1beta1.GardenerName) {
 		key, err := cache.MetaNamespaceKeyFunc(newObj)
 		if err != nil {
 			gardenlogger.Logger.Errorf("Couldn't get key for object %+v: %v", newObj, err)
@@ -131,10 +132,7 @@ func (r *shootReferenceReconciler) Reconcile(ctx context.Context, request reconc
 
 	r.logger.Infof("[SHOOT REFERENCE CONTROL] %s", request)
 
-	if err := r.reconcileShootReferences(ctx, gardenClient.Client(), shoot); err != nil {
-		return reconcile.Result{}, err
-	}
-	return reconcile.Result{}, nil
+	return reconcile.Result{}, r.reconcileShootReferences(ctx, gardenClient.Client(), shoot)
 }
 
 func (r *shootReferenceReconciler) reconcileShootReferences(ctx context.Context, c client.Client, shoot *gardencorev1beta1.Shoot) error {
@@ -149,7 +147,7 @@ func (r *shootReferenceReconciler) reconcileShootReferences(ctx context.Context,
 	}
 
 	// Remove finalizer from shoot in case it's being deleted and not handled by Gardener any more.
-	if shoot.DeletionTimestamp != nil && !controllerutils.HasFinalizer(shoot, gardencorev1beta1.GardenerName) {
+	if shoot.DeletionTimestamp != nil && !controllerutil.ContainsFinalizer(shoot, gardencorev1beta1.GardenerName) {
 		return controllerutils.PatchRemoveFinalizers(ctx, c, shoot, FinalizerName)
 	}
 
@@ -167,9 +165,9 @@ func (r *shootReferenceReconciler) reconcileShootReferences(ctx context.Context,
 	needsFinalizer := addedFinalizerToSecret || addedFinalizerToConfigMap
 
 	// Manage finalizers on shoot.
-	hasFinalizer := controllerutils.HasFinalizer(shoot, FinalizerName)
+	hasFinalizer := controllerutil.ContainsFinalizer(shoot, FinalizerName)
 	if needsFinalizer && !hasFinalizer {
-		return controllerutils.PatchFinalizers(ctx, c, shoot, FinalizerName)
+		return controllerutils.PatchAddFinalizers(ctx, c, shoot, FinalizerName)
 	}
 	if !needsFinalizer && hasFinalizer {
 		return controllerutils.PatchRemoveFinalizers(ctx, c, shoot, FinalizerName)
@@ -200,10 +198,10 @@ func (r *shootReferenceReconciler) handleReferencedSecrets(ctx context.Context, 
 
 			atomic.StoreUint32(&added, 1)
 
-			if controllerutils.HasFinalizer(secret, FinalizerName) {
+			if controllerutil.ContainsFinalizer(secret, FinalizerName) {
 				return nil
 			}
-			return controllerutils.PatchFinalizers(ctx, c, secret, FinalizerName)
+			return controllerutils.PatchAddFinalizers(ctx, c, secret, FinalizerName)
 		})
 	}
 	err := flow.Parallel(fns...)(ctx)
@@ -219,11 +217,11 @@ func (r *shootReferenceReconciler) handleReferencedConfigMap(ctx context.Context
 				return false, err
 			}
 
-			if controllerutils.HasFinalizer(configMap, FinalizerName) {
+			if controllerutil.ContainsFinalizer(configMap, FinalizerName) {
 				return true, nil
 			}
 
-			return true, controllerutils.PatchFinalizers(ctx, c, configMap, FinalizerName)
+			return true, controllerutils.PatchAddFinalizers(ctx, c, configMap, FinalizerName)
 		}
 	}
 
@@ -287,7 +285,7 @@ func (r *shootReferenceReconciler) getUnreferencedSecrets(ctx context.Context, c
 	referencedSecrets := sets.NewString()
 	for _, s := range shoots.Items {
 		// Ignore own references if shoot is in deletion and references are not needed any more by Gardener.
-		if s.Name == shoot.Name && shoot.DeletionTimestamp != nil && !controllerutils.HasFinalizer(&s, gardencorev1beta1.GardenerName) {
+		if s.Name == shoot.Name && shoot.DeletionTimestamp != nil && !controllerutil.ContainsFinalizer(&s, gardencorev1beta1.GardenerName) {
 			continue
 		}
 		referencedSecrets.Insert(secretNamesForDNSProviders(&s)...)
@@ -295,7 +293,7 @@ func (r *shootReferenceReconciler) getUnreferencedSecrets(ctx context.Context, c
 
 	var secretsToRelease []corev1.Secret
 	for _, secret := range secrets.Items {
-		if !controllerutils.HasFinalizer(&secret, FinalizerName) {
+		if !controllerutil.ContainsFinalizer(&secret, FinalizerName) {
 			continue
 		}
 		if referencedSecrets.Has(secret.Name) {
@@ -328,7 +326,7 @@ func (r *shootReferenceReconciler) getUnreferencedConfigMaps(ctx context.Context
 	referencedConfigMaps := sets.NewString()
 	for _, s := range shoots.Items {
 		// Ignore own references if shoot is in deletion and references are not needed any more by Gardener.
-		if s.Name == shoot.Name && shoot.DeletionTimestamp != nil && !controllerutils.HasFinalizer(&s, gardencorev1beta1.GardenerName) {
+		if s.Name == shoot.Name && shoot.DeletionTimestamp != nil && !controllerutil.ContainsFinalizer(&s, gardencorev1beta1.GardenerName) {
 			continue
 		}
 
@@ -341,7 +339,7 @@ func (r *shootReferenceReconciler) getUnreferencedConfigMaps(ctx context.Context
 
 	var configMapsToRelease []corev1.ConfigMap
 	for _, configMap := range configMaps.Items {
-		if !controllerutils.HasFinalizer(&configMap, FinalizerName) {
+		if !controllerutil.ContainsFinalizer(&configMap, FinalizerName) {
 			continue
 		}
 		if referencedConfigMaps.Has(configMap.Name) {

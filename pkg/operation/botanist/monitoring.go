@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gardener/gardener/charts"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
@@ -28,6 +29,7 @@ import (
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
 	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/secrets"
 
@@ -109,7 +111,7 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 		usersDashboards.WriteString(fmt.Sprintln(cm.Data[v1beta1constants.GrafanaConfigMapUserDashboard]))
 	}
 
-	alerting, err := b.getCustomAlertingConfigs(ctx, b.GetSecretKeysOfRole(common.GardenRoleAlerting))
+	alerting, err := b.getCustomAlertingConfigs(ctx, b.GetSecretKeysOfRole(v1beta1constants.GardenRoleAlerting))
 	if err != nil {
 		return err
 	}
@@ -168,8 +170,8 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 				},
 			},
 			"shoot": map[string]interface{}{
-				"apiserver":           fmt.Sprintf("https://%s", common.GetAPIServerDomain(b.Shoot.InternalClusterDomain)),
-				"apiserverServerName": common.GetAPIServerDomain(b.Shoot.InternalClusterDomain),
+				"apiserver":           fmt.Sprintf("https://%s", gutil.GetAPIServerDomain(b.Shoot.InternalClusterDomain)),
+				"apiserverServerName": gutil.GetAPIServerDomain(b.Shoot.InternalClusterDomain),
 				"sniEnabled":          b.APIServerSNIEnabled(),
 				"provider":            b.Shoot.Info.Spec.Provider.Type,
 				"name":                b.Shoot.Info.Name,
@@ -192,9 +194,9 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 
 	var (
 		prometheusImages = []string{
-			common.PrometheusImageName,
-			common.ConfigMapReloaderImageName,
-			common.BlackboxExporterImageName,
+			charts.ImageNamePrometheus,
+			charts.ImageNameConfigmapReloader,
+			charts.ImageNameBlackboxExporter,
 		}
 		podAnnotations = map[string]interface{}{
 			"checksum/secret-prometheus": b.CheckSums["prometheus"],
@@ -207,7 +209,7 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	kubeStateMetricsShoot, err := b.InjectSeedShootImages(kubeStateMetricsShootConfig, common.KubeStateMetricsImageName)
+	kubeStateMetricsShoot, err := b.InjectSeedShootImages(kubeStateMetricsShootConfig, charts.ImageNameKubeStateMetrics)
 	if err != nil {
 		return err
 	}
@@ -222,7 +224,7 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 		"kube-state-metrics-shoot": kubeStateMetricsShoot,
 	}
 
-	if err := b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(common.ChartPath, "seed-monitoring", "charts", "core"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-monitoring", b.Shoot.SeedNamespace), kubernetes.Values(coreValues)); err != nil {
+	if err := b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(charts.Path, "seed-monitoring", "charts", "core"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-monitoring", b.Shoot.SeedNamespace), kubernetes.Values(coreValues)); err != nil {
 		return err
 	}
 
@@ -237,7 +239,7 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 	// Check if we want to deploy an alertmanager into the shoot namespace.
 	if b.Shoot.WantsAlertmanager {
 		var (
-			alertingSMTPKeys = b.GetSecretKeysOfRole(common.GardenRoleAlerting)
+			alertingSMTPKeys = b.GetSecretKeysOfRole(v1beta1constants.GardenRoleAlerting)
 			emailConfigs     = []map[string]interface{}{}
 		)
 
@@ -282,11 +284,11 @@ func (b *Botanist) DeploySeedMonitoring(ctx context.Context) error {
 			"replicas":     b.Shoot.GetReplicas(1),
 			"storage":      b.Seed.GetValidVolumeSize("1Gi"),
 			"emailConfigs": emailConfigs,
-		}, common.AlertManagerImageName, common.ConfigMapReloaderImageName)
+		}, charts.ImageNameAlertmanager, charts.ImageNameConfigmapReloader)
 		if err != nil {
 			return err
 		}
-		if err := b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(common.ChartPath, "seed-monitoring", "charts", "alertmanager"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-monitoring", b.Shoot.SeedNamespace), kubernetes.Values(alertManagerValues)); err != nil {
+		if err := b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(charts.Path, "seed-monitoring", "charts", "alertmanager"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-monitoring", b.Shoot.SeedNamespace), kubernetes.Values(alertManagerValues)); err != nil {
 			return err
 		}
 	} else {
@@ -413,11 +415,20 @@ func (b *Botanist) deployGrafanaCharts(ctx context.Context, role, dashboards, ba
 		"sni": map[string]interface{}{
 			"enabled": b.APIServerSNIEnabled(),
 		},
-	}, common.GrafanaImageName, common.BusyboxImageName)
+	}, charts.ImageNameGrafana, charts.ImageNameBusybox)
 	if err != nil {
 		return err
 	}
-	return b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(common.ChartPath, "seed-monitoring", "charts", "grafana"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-monitoring", b.Shoot.SeedNamespace), kubernetes.Values(values))
+	return b.K8sSeedClient.ChartApplier().Apply(ctx, filepath.Join(charts.Path, "seed-monitoring", "charts", "grafana"), b.Shoot.SeedNamespace, fmt.Sprintf("%s-monitoring", b.Shoot.SeedNamespace), kubernetes.Values(values))
+}
+
+// DeleteGrafana will delete all grafana instances from the seed cluster.
+func (b *Botanist) DeleteGrafana(ctx context.Context) error {
+	if err := common.DeleteGrafanaByRole(ctx, b.K8sSeedClient, b.Shoot.SeedNamespace, common.GrafanaOperatorsRole); err != nil {
+		return err
+	}
+
+	return common.DeleteGrafanaByRole(ctx, b.K8sSeedClient, b.Shoot.SeedNamespace, common.GrafanaUsersRole)
 }
 
 // DeleteSeedMonitoring will delete the monitoring stack from the Seed cluster to avoid phantom alerts
@@ -425,14 +436,6 @@ func (b *Botanist) deployGrafanaCharts(ctx context.Context, role, dashboards, ba
 // deleted.
 func (b *Botanist) DeleteSeedMonitoring(ctx context.Context) error {
 	if err := common.DeleteAlertmanager(ctx, b.K8sSeedClient.Client(), b.Shoot.SeedNamespace); err != nil {
-		return err
-	}
-
-	if err := common.DeleteGrafanaByRole(ctx, b.K8sSeedClient, b.Shoot.SeedNamespace, common.GrafanaOperatorsRole); err != nil {
-		return err
-	}
-
-	if err := common.DeleteGrafanaByRole(ctx, b.K8sSeedClient, b.Shoot.SeedNamespace, common.GrafanaUsersRole); err != nil {
 		return err
 	}
 

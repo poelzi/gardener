@@ -21,12 +21,12 @@ import (
 	"github.com/gardener/gardener/pkg/chartrenderer"
 	gardencorefake "github.com/gardener/gardener/pkg/client/core/clientset/versioned/fake"
 	"github.com/gardener/gardener/pkg/client/kubernetes/fake"
+	mockkubernetes "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	"github.com/gardener/gardener/pkg/client/kubernetes/test"
-	"github.com/gardener/gardener/pkg/mock/apimachinery/api/meta"
+	gardenseedmanagementfake "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned/fake"
 	mockdiscovery "github.com/gardener/gardener/pkg/mock/client-go/discovery"
 	mockcache "github.com/gardener/gardener/pkg/mock/controller-runtime/cache"
 	mockclient "github.com/gardener/gardener/pkg/mock/controller-runtime/client"
-	"github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
 
 	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo"
@@ -55,7 +55,7 @@ var _ = Describe("Fake ClientSet", func() {
 	})
 
 	It("should correctly set applier attribute", func() {
-		applier := kubernetes.NewMockApplier(ctrl)
+		applier := mockkubernetes.NewMockApplier(ctrl)
 		cs := builder.WithApplier(applier).Build()
 
 		Expect(cs.Applier()).To(BeIdenticalTo(applier))
@@ -69,7 +69,7 @@ var _ = Describe("Fake ClientSet", func() {
 	})
 
 	It("should correctly set chartApplier attribute", func() {
-		chartApplier := kubernetes.NewMockChartApplier(ctrl)
+		chartApplier := mockkubernetes.NewMockChartApplier(ctrl)
 		cs := builder.WithChartApplier(chartApplier).Build()
 
 		Expect(cs.ChartApplier()).To(BeIdenticalTo(chartApplier))
@@ -89,6 +89,13 @@ var _ = Describe("Fake ClientSet", func() {
 		Expect(cs.Client()).To(BeIdenticalTo(client))
 	})
 
+	It("should correctly set apiReader attribute", func() {
+		apiReader := mockclient.NewMockReader(ctrl)
+		cs := builder.WithAPIReader(apiReader).Build()
+
+		Expect(cs.APIReader()).To(BeIdenticalTo(apiReader))
+	})
+
 	It("should correctly set directClient attribute", func() {
 		directClient := mockclient.NewMockClient(ctrl)
 		cs := builder.WithDirectClient(directClient).Build()
@@ -103,13 +110,6 @@ var _ = Describe("Fake ClientSet", func() {
 		Expect(cs.Cache()).To(BeIdenticalTo(cache))
 	})
 
-	It("should correctly set restMapper attribute", func() {
-		restMapper := meta.NewMockRESTMapper(ctrl)
-		cs := builder.WithRESTMapper(restMapper).Build()
-
-		Expect(cs.RESTMapper()).To(BeIdenticalTo(restMapper))
-	})
-
 	It("should correctly set kubernetes attribute", func() {
 		kubernetes := kubernetesfake.NewSimpleClientset()
 		cs := builder.WithKubernetes(kubernetes).Build()
@@ -122,6 +122,13 @@ var _ = Describe("Fake ClientSet", func() {
 		cs := builder.WithGardenCore(gardenCore).Build()
 
 		Expect(cs.GardenCore()).To(BeIdenticalTo(gardenCore))
+	})
+
+	It("should correctly set gardenSeedManagement attribute", func() {
+		gardenSeedManagement := gardenseedmanagementfake.NewSimpleClientset()
+		cs := builder.WithGardenSeedManagement(gardenSeedManagement).Build()
+
+		Expect(cs.GardenSeedManagement()).To(BeIdenticalTo(gardenSeedManagement))
 	})
 
 	It("should correctly set apiextension attribute", func() {

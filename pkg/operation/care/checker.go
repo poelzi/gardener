@@ -26,7 +26,8 @@ import (
 	gardencorev1beta1helper "github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
 	extensionsv1alpha1 "github.com/gardener/gardener/pkg/apis/extensions/v1alpha1"
 	"github.com/gardener/gardener/pkg/operation/botanist"
-	"github.com/gardener/gardener/pkg/operation/botanist/systemcomponents/namespaces"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/metricsserver"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/namespaces"
 	"github.com/gardener/gardener/pkg/operation/common"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 	"github.com/gardener/gardener/pkg/utils/kubernetes/health"
@@ -39,9 +40,32 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+var (
+	requiredControlPlaneDeployments = sets.NewString(
+		v1beta1constants.DeploymentNameGardenerResourceManager,
+		v1beta1constants.DeploymentNameKubeAPIServer,
+		v1beta1constants.DeploymentNameKubeControllerManager,
+		v1beta1constants.DeploymentNameKubeScheduler,
+	)
+
+	requiredControlPlaneEtcds = sets.NewString(
+		v1beta1constants.ETCDMain,
+		v1beta1constants.ETCDEvents,
+	)
+
+	requiredMonitoringSeedDeployments = sets.NewString(
+		v1beta1constants.DeploymentNameGrafanaOperators,
+		v1beta1constants.DeploymentNameGrafanaUsers,
+		v1beta1constants.DeploymentNameKubeStateMetricsShoot,
+	)
+
+	requiredLoggingStatefulSets = sets.NewString(
+		v1beta1constants.StatefulSetNameLoki,
+	)
 )
 
 func mustGardenRoleLabelSelector(gardenRoles ...string) labels.Selector {
@@ -73,17 +97,15 @@ type HealthChecker struct {
 	staleExtensionHealthCheckThreshold *metav1.Duration
 	lastOperation                      *gardencorev1beta1.LastOperation
 	kubernetesVersion                  *semver.Version
-	gardenerVersion                    *semver.Version
 }
 
 // NewHealthChecker creates a new health checker.
-func NewHealthChecker(conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration, healthCheckOutdatedThreshold *metav1.Duration, lastOperation *gardencorev1beta1.LastOperation, kubernetesVersion *semver.Version, gardenerVersion *semver.Version) *HealthChecker {
+func NewHealthChecker(conditionThresholds map[gardencorev1beta1.ConditionType]time.Duration, healthCheckOutdatedThreshold *metav1.Duration, lastOperation *gardencorev1beta1.LastOperation, kubernetesVersion *semver.Version) *HealthChecker {
 	return &HealthChecker{
 		conditionThresholds:                conditionThresholds,
 		staleExtensionHealthCheckThreshold: healthCheckOutdatedThreshold,
 		lastOperation:                      lastOperation,
 		kubernetesVersion:                  kubernetesVersion,
-		gardenerVersion:                    gardenerVersion,
 	}
 }
 
@@ -108,7 +130,7 @@ func (b *HealthChecker) checkRequiredDeployments(condition gardencorev1beta1.Con
 func (b *HealthChecker) checkDeployments(condition gardencorev1beta1.Condition, objects []*appsv1.Deployment) *gardencorev1beta1.Condition {
 	for _, object := range objects {
 		if err := health.CheckDeployment(object); err != nil {
-			c := b.FailedCondition(condition, "DeploymentUnhealthy", fmt.Sprintf("Deployment %s is unhealthy: %v", object.Name, err.Error()))
+			c := b.FailedCondition(condition, "DeploymentUnhealthy", fmt.Sprintf("Deployment %q is unhealthy: %v", object.Name, err.Error()))
 			return &c
 		}
 	}
@@ -129,7 +151,7 @@ func (b *HealthChecker) checkEtcds(condition gardencorev1beta1.Condition, object
 	for _, object := range objects {
 		if err := health.CheckEtcd(object); err != nil {
 			var (
-				message = fmt.Sprintf("Etcd %s is unhealthy: %v", object.Name, err.Error())
+				message = fmt.Sprintf("Etcd extension resource %q is unhealthy: %v", object.Name, err.Error())
 				codes   []gardencorev1beta1.ErrorCode
 			)
 
@@ -158,7 +180,7 @@ func (b *HealthChecker) checkRequiredStatefulSets(condition gardencorev1beta1.Co
 func (b *HealthChecker) checkStatefulSets(condition gardencorev1beta1.Condition, objects []*appsv1.StatefulSet) *gardencorev1beta1.Condition {
 	for _, object := range objects {
 		if err := health.CheckStatefulSet(object); err != nil {
-			c := b.FailedCondition(condition, "StatefulSetUnhealthy", fmt.Sprintf("Stateful set %s is unhealthy: %v", object.Name, err.Error()))
+			c := b.FailedCondition(condition, "StatefulSetUnhealthy", fmt.Sprintf("Stateful set %q is unhealthy: %v", object.Name, err.Error()))
 			return &c
 		}
 	}
@@ -170,7 +192,7 @@ func (b *HealthChecker) checkNodes(condition gardencorev1beta1.Condition, nodes 
 	for _, object := range nodes {
 		if err := health.CheckNode(&object); err != nil {
 			var (
-				message = fmt.Sprintf("Node '%s' in worker group '%s' is unhealthy: %v", object.Name, workerGroupName, err)
+				message = fmt.Sprintf("Node %q in worker group %q is unhealthy: %v", object.Name, workerGroupName, err)
 				codes   = gardencorev1beta1helper.ExtractErrorCodes(gardencorev1beta1helper.DetermineError(err, ""))
 			)
 
@@ -204,7 +226,7 @@ func (b *HealthChecker) checkNodes(condition gardencorev1beta1.Condition, nodes 
 // CheckManagedResource checks the conditions of the given managed resource and reflects the state in the returned condition.
 func (b *HealthChecker) CheckManagedResource(condition gardencorev1beta1.Condition, mr *resourcesv1alpha1.ManagedResource) *gardencorev1beta1.Condition {
 	if mr.Generation != mr.Status.ObservedGeneration {
-		c := b.FailedCondition(condition, gardencorev1beta1.OutdatedStatusError, fmt.Sprintf("observed generation of managed resource %s/%s outdated (%d/%d)", mr.Namespace, mr.Name, mr.Status.ObservedGeneration, mr.Generation))
+		c := b.FailedCondition(condition, gardencorev1beta1.OutdatedStatusError, fmt.Sprintf("observed generation of managed resource '%s/%s' outdated (%d/%d)", mr.Namespace, mr.Name, mr.Status.ObservedGeneration, mr.Generation))
 		return &c
 	}
 
@@ -265,7 +287,7 @@ func computeRequiredControlPlaneDeployments(
 		return nil, err
 	}
 
-	requiredControlPlaneDeployments := sets.NewString(common.RequiredControlPlaneDeployments.UnsortedList()...)
+	requiredControlPlaneDeployments := sets.NewString(requiredControlPlaneDeployments.UnsortedList()...)
 	if shootWantsClusterAutoscaler {
 		workers, err := workerLister.List(labels.Everything())
 		if err != nil {
@@ -338,7 +360,7 @@ func (b *HealthChecker) CheckControlPlane(
 	if err != nil {
 		return nil, err
 	}
-	if exitCondition := b.checkRequiredEtcds(condition, common.RequiredControlPlaneEtcds, etcds); exitCondition != nil {
+	if exitCondition := b.checkRequiredEtcds(condition, requiredControlPlaneEtcds, etcds); exitCondition != nil {
 		return exitCondition, nil
 	}
 	if exitCondition := b.checkEtcds(condition, etcds); exitCondition != nil {
@@ -411,7 +433,7 @@ func (b *HealthChecker) CheckClusterNodes(
 		}
 
 		if len(nodes) < int(worker.Minimum) {
-			c := b.FailedCondition(condition, "MissingNodes", fmt.Sprintf("Not enough worker nodes registered in worker pool '%s' to meet minimum desired machine count. (%d/%d).", worker.Name, len(nodes), worker.Minimum))
+			c := b.FailedCondition(condition, "MissingNodes", fmt.Sprintf("Not enough worker nodes registered in worker pool %q to meet minimum desired machine count. (%d/%d).", worker.Name, len(nodes), worker.Minimum))
 			return &c, nil
 		}
 	}
@@ -441,7 +463,7 @@ func (b *HealthChecker) CheckMonitoringControlPlane(
 	if err != nil {
 		return nil, err
 	}
-	if exitCondition := b.checkRequiredDeployments(condition, common.RequiredMonitoringSeedDeployments, deploymentList); exitCondition != nil {
+	if exitCondition := b.checkRequiredDeployments(condition, requiredMonitoringSeedDeployments, deploymentList); exitCondition != nil {
 		return exitCondition, nil
 	}
 	if exitCondition := b.checkDeployments(condition, deploymentList); exitCondition != nil {
@@ -477,7 +499,7 @@ func (b *HealthChecker) CheckLoggingControlPlane(
 	if err != nil {
 		return nil, err
 	}
-	if exitCondition := b.checkRequiredStatefulSets(condition, common.RequiredLoggingStatefulSets, statefulSetList); exitCondition != nil {
+	if exitCondition := b.checkRequiredStatefulSets(condition, requiredLoggingStatefulSets, statefulSetList); exitCondition != nil {
 		return exitCondition, nil
 	}
 	if exitCondition := b.checkStatefulSets(condition, statefulSetList); exitCondition != nil {
@@ -492,7 +514,7 @@ func (b *HealthChecker) CheckExtensionCondition(condition gardencorev1beta1.Cond
 	for _, cond := range extensionsConditions {
 		// check if the health check condition.lastUpdateTime is older than the configured staleExtensionHealthCheckThreshold
 		if b.staleExtensionHealthCheckThreshold != nil && Now().UTC().Sub(cond.Condition.LastUpdateTime.UTC()) > b.staleExtensionHealthCheckThreshold.Duration {
-			c := gardencorev1beta1helper.UpdatedCondition(condition, gardencorev1beta1.ConditionUnknown, fmt.Sprintf("%sOutdatedHealthCheckReport", cond.ExtensionType), fmt.Sprintf("%q CRD (%s/%s) reports an outdated health status (last updated: %s ago at %s).", cond.ExtensionType, cond.ExtensionNamespace, cond.ExtensionName, time.Now().UTC().Sub(cond.Condition.LastUpdateTime.UTC()).Round(time.Minute).String(), cond.Condition.LastUpdateTime.UTC().Round(time.Minute).String()))
+			c := gardencorev1beta1helper.UpdatedCondition(condition, gardencorev1beta1.ConditionUnknown, fmt.Sprintf("%sOutdatedHealthCheckReport", cond.ExtensionType), fmt.Sprintf("%s extension (%s/%s) reports an outdated health status (last updated: %s ago at %s).", cond.ExtensionType, cond.ExtensionNamespace, cond.ExtensionName, time.Now().UTC().Sub(cond.Condition.LastUpdateTime.UTC()).Round(time.Minute).String(), cond.Condition.LastUpdateTime.UTC().Round(time.Minute).String()))
 			return &c
 		}
 
@@ -502,7 +524,7 @@ func (b *HealthChecker) CheckExtensionCondition(condition gardencorev1beta1.Cond
 		}
 
 		if cond.Condition.Status == gardencorev1beta1.ConditionFalse || cond.Condition.Status == gardencorev1beta1.ConditionUnknown {
-			c := b.FailedCondition(condition, fmt.Sprintf("%sUnhealthyReport", cond.ExtensionType), fmt.Sprintf("%q CRD (%s/%s) reports failing health check: %s", cond.ExtensionType, cond.ExtensionNamespace, cond.ExtensionName, cond.Condition.Message), cond.Condition.Codes...)
+			c := b.FailedCondition(condition, fmt.Sprintf("%sUnhealthyReport", cond.ExtensionType), fmt.Sprintf("%s extension (%s/%s) reports failing health check: %s", cond.ExtensionType, cond.ExtensionNamespace, cond.ExtensionName, cond.Condition.Message), cond.Condition.Codes...)
 			return &c
 		}
 	}
@@ -510,19 +532,11 @@ func (b *HealthChecker) CheckExtensionCondition(condition gardencorev1beta1.Cond
 	return nil
 }
 
-var versionConstraintGreaterEqual113 *semver.Constraints
-
-func init() {
-	var err error
-
-	versionConstraintGreaterEqual113, err = semver.NewConstraint(">= 1.13")
-	utilruntime.Must(err)
-}
-
 var managedResourcesShoot = sets.NewString(
 	namespaces.ManagedResourceName,
 	common.ManagedResourceShootCoreName,
 	common.ManagedResourceAddonsName,
+	metricsserver.ManagedResourceName,
 )
 
 func makeDeploymentLister(ctx context.Context, c client.Client, namespace string, selector labels.Selector) kutil.DeploymentLister {

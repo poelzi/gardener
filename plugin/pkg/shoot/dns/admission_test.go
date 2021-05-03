@@ -22,7 +22,7 @@ import (
 	"github.com/gardener/gardener/pkg/apis/core"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	coreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
-	"github.com/gardener/gardener/pkg/operation/common"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	. "github.com/gardener/gardener/plugin/pkg/shoot/dns"
 
 	. "github.com/onsi/ginkgo"
@@ -70,11 +70,11 @@ var _ = Describe("dns", func() {
 					Name:      "secret-1",
 					Namespace: v1beta1constants.GardenNamespace,
 					Labels: map[string]string{
-						v1beta1constants.GardenRole: common.GardenRoleDefaultDomain,
+						v1beta1constants.GardenRole: v1beta1constants.GardenRoleDefaultDomain,
 					},
 					Annotations: map[string]string{
-						common.DNSDomain:   domain,
-						common.DNSProvider: defaultDomainProvider,
+						gutil.DNSDomain:   domain,
+						gutil.DNSProvider: defaultDomainProvider,
 					},
 				},
 			}
@@ -627,7 +627,7 @@ var _ = Describe("dns", func() {
 
 				err := admissionHandler.Admit(context.TODO(), attrs, nil)
 
-				Expect(err).To(MatchError(apierrors.NewInternalError(fmt.Errorf("no project found for namespace %q", shoot.Namespace))))
+				Expect(err).To(MatchError(apierrors.NewInternalError(fmt.Errorf("Project.core.gardener.cloud %q not found", shoot.Namespace))))
 			})
 
 			It("should reject because no domain was configured for the shoot and default domain secret is missing", func() {

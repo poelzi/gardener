@@ -17,19 +17,19 @@ package botanist
 import (
 	"context"
 
+	"github.com/gardener/gardener/charts"
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/client/kubernetes"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
-	"github.com/gardener/gardener/pkg/operation/botanist/controlplane/kubecontrollermanager"
-	"github.com/gardener/gardener/pkg/operation/common"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/kubecontrollermanager"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 	kutil "github.com/gardener/gardener/pkg/utils/kubernetes"
 )
 
 // DefaultKubeControllerManager returns a deployer for the kube-controller-manager.
 func (b *Botanist) DefaultKubeControllerManager() (kubecontrollermanager.KubeControllerManager, error) {
-	image, err := b.ImageVector.FindImage(common.KubeControllerManagerImageName, imagevector.RuntimeVersion(b.SeedVersion()), imagevector.TargetVersion(b.ShootVersion()))
+	image, err := b.ImageVector.FindImage(charts.ImageNameKubeControllerManager, imagevector.RuntimeVersion(b.SeedVersion()), imagevector.TargetVersion(b.ShootVersion()))
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (b *Botanist) WaitForKubeControllerManagerToBeActive(ctx context.Context) e
 
 // ScaleKubeControllerManagerToOne scales kube-controller-manager replicas to one.
 func (b *Botanist) ScaleKubeControllerManagerToOne(ctx context.Context) error {
-	return kubernetes.ScaleDeployment(ctx, b.K8sSeedClient.DirectClient(), kutil.Key(b.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeControllerManager), 1)
+	return kubernetes.ScaleDeployment(ctx, b.K8sSeedClient.Client(), kutil.Key(b.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeControllerManager), 1)
 }
 
 func (b *Botanist) determineKubeControllerManagerReplicas(ctx context.Context) (int32, error) {
@@ -90,7 +90,7 @@ func (b *Botanist) determineKubeControllerManagerReplicas(ctx context.Context) (
 	if b.Shoot.HibernationEnabled == b.Shoot.Info.Status.IsHibernated {
 		// shoot is being reconciled with .spec.hibernation.enabled=.status.isHibernated, so keep the replicas which
 		// are controlled by the dependency-watchdog
-		return common.CurrentReplicaCount(ctx, b.K8sSeedClient.Client(), b.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeControllerManager)
+		return kutil.CurrentReplicaCountForDeployment(ctx, b.K8sSeedClient.Client(), b.Shoot.SeedNamespace, v1beta1constants.DeploymentNameKubeControllerManager)
 	}
 
 	// shoot is being reconciled with .spec.hibernation.enabled!=.status.isHibernated, so deploy KCM. in case the

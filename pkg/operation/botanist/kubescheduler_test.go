@@ -19,12 +19,12 @@ import (
 	"fmt"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	mockkubernetes "github.com/gardener/gardener/pkg/mock/gardener/client/kubernetes"
-	mockkubescheduler "github.com/gardener/gardener/pkg/mock/gardener/operation/botanist/controlplane/kubescheduler"
+	mockkubernetes "github.com/gardener/gardener/pkg/client/kubernetes/mock"
 	"github.com/gardener/gardener/pkg/operation"
 	. "github.com/gardener/gardener/pkg/operation/botanist"
 	"github.com/gardener/gardener/pkg/operation/botanist/component"
-	"github.com/gardener/gardener/pkg/operation/botanist/controlplane/kubescheduler"
+	"github.com/gardener/gardener/pkg/operation/botanist/component/kubescheduler"
+	mockkubescheduler "github.com/gardener/gardener/pkg/operation/botanist/component/kubescheduler/mock"
 	shootpkg "github.com/gardener/gardener/pkg/operation/shoot"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 

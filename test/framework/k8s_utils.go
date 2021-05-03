@@ -50,11 +50,11 @@ func (f *CommonFramework) WaitUntilDaemonSetIsRunning(ctx context.Context, k8sCl
 		}
 
 		if err := health.CheckDaemonSet(daemonSet); err != nil {
-			f.Logger.Infof("Waiting for %s to be ready!!", daemonSetName)
-			return retry.MinorError(fmt.Errorf("daemon set %s is not healthy: %v", daemonSetName, err))
+			f.Logger.Infof("Waiting for %q to be ready!", daemonSetName)
+			return retry.MinorError(fmt.Errorf("daemon set %q is not healthy: %v", daemonSetName, err))
 		}
 
-		f.Logger.Infof("%s is now ready!!", daemonSetName)
+		f.Logger.Infof("Daemon set %q is now ready!", daemonSetName)
 		return retry.Ok()
 	})
 }
@@ -63,13 +63,13 @@ func (f *CommonFramework) WaitUntilDaemonSetIsRunning(ctx context.Context, k8sCl
 func (f *CommonFramework) WaitUntilStatefulSetIsRunning(ctx context.Context, statefulSetName, statefulSetNamespace string, c kubernetes.Interface) error {
 	return retry.Until(ctx, defaultPollInterval, func(ctx context.Context) (done bool, err error) {
 		statefulSet := &appsv1.StatefulSet{}
-		if err := c.DirectClient().Get(ctx, client.ObjectKey{Namespace: statefulSetNamespace, Name: statefulSetName}, statefulSet); err != nil {
+		if err := c.Client().Get(ctx, client.ObjectKey{Namespace: statefulSetNamespace, Name: statefulSetName}, statefulSet); err != nil {
 			return retry.MinorError(err)
 		}
 
 		if err := health.CheckStatefulSet(statefulSet); err != nil {
-			f.Logger.Infof("Waiting for %s to be ready!!", statefulSetName)
-			return retry.MinorError(fmt.Errorf("stateful set %s is not healthy: %v", statefulSetName, err))
+			f.Logger.Infof("Waiting for %q to be ready!", statefulSetName)
+			return retry.MinorError(fmt.Errorf("stateful set %q is not healthy: %v", statefulSetName, err))
 		}
 
 		f.Logger.Infof("%s is now ready!!", statefulSetName)
@@ -81,9 +81,9 @@ func (f *CommonFramework) WaitUntilStatefulSetIsRunning(ctx context.Context, sta
 func (f *CommonFramework) WaitUntilDeploymentIsReady(ctx context.Context, name string, namespace string, k8sClient kubernetes.Interface) error {
 	return retry.Until(ctx, defaultPollInterval, func(ctx context.Context) (done bool, err error) {
 		deployment := &appsv1.Deployment{}
-		if err := k8sClient.DirectClient().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, deployment); err != nil {
+		if err := k8sClient.Client().Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, deployment); err != nil {
 			if apierrors.IsNotFound(err) {
-				f.Logger.Infof("Waiting for deployment %s/%s to be ready!", namespace, name)
+				f.Logger.Infof("Waiting for deployment '%s/%s' to be ready!", namespace, name)
 				return retry.MinorError(fmt.Errorf("deployment %q in namespace %q does not exist", name, namespace))
 			}
 			return retry.SevereError(err)
@@ -91,7 +91,7 @@ func (f *CommonFramework) WaitUntilDeploymentIsReady(ctx context.Context, name s
 
 		err = health.CheckDeployment(deployment)
 		if err != nil {
-			f.Logger.Infof("Waiting for deployment %s/%s to be ready!", namespace, name)
+			f.Logger.Infof("Waiting for deployment '%s/%s' to be ready!", namespace, name)
 			return retry.MinorError(fmt.Errorf("deployment %q in namespace %q is not healthy", name, namespace))
 		}
 		return retry.Ok()
@@ -102,10 +102,10 @@ func (f *CommonFramework) WaitUntilDeploymentIsReady(ctx context.Context, name s
 func (f *CommonFramework) WaitUntilDeploymentsWithLabelsIsReady(ctx context.Context, deploymentLabels labels.Selector, namespace string, k8sClient kubernetes.Interface) error {
 	return retry.Until(ctx, defaultPollInterval, func(ctx context.Context) (done bool, err error) {
 		deployments := &appsv1.DeploymentList{}
-		if err := k8sClient.DirectClient().List(ctx, deployments, client.MatchingLabelsSelector{Selector: deploymentLabels}, client.InNamespace(namespace)); err != nil {
+		if err := k8sClient.Client().List(ctx, deployments, client.MatchingLabelsSelector{Selector: deploymentLabels}, client.InNamespace(namespace)); err != nil {
 			if apierrors.IsNotFound(err) {
 				f.Logger.Infof("Waiting for deployments with labels: %v to be ready!!", deploymentLabels.String())
-				return retry.MinorError(fmt.Errorf("no deployments with labels %s exist", deploymentLabels.String()))
+				return retry.MinorError(fmt.Errorf("no deployments with labels '%s' exist", deploymentLabels.String()))
 			}
 			return retry.SevereError(err)
 		}
@@ -113,8 +113,8 @@ func (f *CommonFramework) WaitUntilDeploymentsWithLabelsIsReady(ctx context.Cont
 		for _, deployment := range deployments.Items {
 			err = health.CheckDeployment(&deployment)
 			if err != nil {
-				f.Logger.Infof("Waiting for deployments with labels: %v to be ready!!", deploymentLabels)
-				return retry.MinorError(fmt.Errorf("deployment %s is not healthy: %v", deployment.Name, err))
+				f.Logger.Infof("Waiting for deployments with labels: %v to be ready!", deploymentLabels)
+				return retry.MinorError(fmt.Errorf("deployment %q is not healthy: %v", deployment.Name, err))
 			}
 		}
 		return retry.Ok()
@@ -124,13 +124,13 @@ func (f *CommonFramework) WaitUntilDeploymentsWithLabelsIsReady(ctx context.Cont
 // WaitUntilNamespaceIsDeleted waits until a namespace has been deleted
 func (f *CommonFramework) WaitUntilNamespaceIsDeleted(ctx context.Context, k8sClient kubernetes.Interface, ns string) error {
 	return retry.Until(ctx, defaultPollInterval, func(ctx context.Context) (bool, error) {
-		if err := k8sClient.DirectClient().Get(ctx, client.ObjectKey{Name: ns}, &corev1.Namespace{}); err != nil {
+		if err := k8sClient.Client().Get(ctx, client.ObjectKey{Name: ns}, &corev1.Namespace{}); err != nil {
 			if apierrors.IsNotFound(err) {
 				return retry.Ok()
 			}
 			return retry.MinorError(err)
 		}
-		return retry.MinorError(errors.Errorf("Namespace %s is not deleted yet", ns))
+		return retry.MinorError(errors.Errorf("Namespace %q is not deleted yet", ns))
 	})
 }
 
@@ -149,12 +149,12 @@ func WaitForNNodesToBeHealthyInWorkerPool(ctx context.Context, k8sClient kuberne
 
 		nodeCount := len(nodeList.Items)
 		if nodeCount != n {
-			return retry.MinorError(fmt.Errorf("waiting for exactly %d nodes to be ready: only %d nodes registered in the cluster", n, nodeCount))
+			return retry.MinorError(fmt.Errorf("waiting for %d nodes to be ready: only %d nodes registered in the cluster", n, nodeCount))
 		}
 
 		for _, node := range nodeList.Items {
 			if err := health.CheckNode(&node); err != nil {
-				return retry.MinorError(fmt.Errorf("waiting for exactly %d nodes to be ready: node %q is not healthy: %v", n, node.Name, err))
+				return retry.MinorError(fmt.Errorf("waiting for %d nodes to be ready: node %q is not healthy: %v", n, node.Name, err))
 			}
 		}
 
@@ -176,14 +176,14 @@ func GetAllNodesInWorkerPool(ctx context.Context, c kubernetes.Interface, worker
 		selectorOption.Selector = labels.SelectorFromSet(labels.Set{"worker.gardener.cloud/pool": *workerGroup})
 	}
 
-	err := c.DirectClient().List(ctx, nodeList, selectorOption)
+	err := c.Client().List(ctx, nodeList, selectorOption)
 	return nodeList, err
 }
 
 // GetPodsByLabels fetches all pods with the desired set of labels <labelsMap>
 func GetPodsByLabels(ctx context.Context, labelsSelector labels.Selector, c kubernetes.Interface, namespace string) (*corev1.PodList, error) {
 	podList := &corev1.PodList{}
-	err := c.DirectClient().List(ctx, podList,
+	err := c.Client().List(ctx, podList,
 		client.InNamespace(namespace),
 		client.MatchingLabelsSelector{Selector: labelsSelector})
 	if err != nil {
@@ -227,12 +227,12 @@ func PodExecByLabel(ctx context.Context, podLabels labels.Selector, podContainer
 
 // DeleteAndWaitForResource deletes a kubernetes resource and waits for its deletion
 func DeleteAndWaitForResource(ctx context.Context, k8sClient kubernetes.Interface, resource client.Object, timeout time.Duration) error {
-	if err := kutil.DeleteObject(ctx, k8sClient.DirectClient(), resource); err != nil {
+	if err := kutil.DeleteObject(ctx, k8sClient.Client(), resource); err != nil {
 		return err
 	}
 	return retry.UntilTimeout(ctx, 5*time.Second, timeout, func(ctx context.Context) (done bool, err error) {
 		newResource := resource.DeepCopyObject().(client.Object)
-		if err := k8sClient.DirectClient().Get(ctx, client.ObjectKeyFromObject(resource), newResource); err != nil {
+		if err := k8sClient.Client().Get(ctx, client.ObjectKeyFromObject(resource), newResource); err != nil {
 			if apierrors.IsNotFound(err) {
 				return retry.Ok()
 			}
@@ -256,7 +256,7 @@ func ScaleDeployment(timeout time.Duration, client client.Client, desiredReplica
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve the replica count of the %s deployment: '%v'", name, err)
+		return nil, fmt.Errorf("failed to retrieve the replica count of deployment %q: '%v'", name, err)
 	}
 	if replicas == nil || *replicas == *desiredReplicas {
 		return replicas, nil
@@ -264,12 +264,12 @@ func ScaleDeployment(timeout time.Duration, client client.Client, desiredReplica
 
 	// scale the deployment
 	if err := kubernetes.ScaleDeployment(ctxSetup, client, kutil.Key(namespace, name), *desiredReplicas); err != nil {
-		return nil, fmt.Errorf("failed to scale the replica count of the %s deployment: '%v'", name, err)
+		return nil, fmt.Errorf("failed to scale the replica count of deployment %q: '%v'", name, err)
 	}
 
 	// wait until scaled
 	if err := WaitUntilDeploymentScaled(ctxSetup, client, namespace, name, *desiredReplicas); err != nil {
-		return nil, fmt.Errorf("failed to wait until the %s deployment is scaled: '%v'", name, err)
+		return nil, fmt.Errorf("failed to wait until deployment %q is scaled: '%v'", name, err)
 	}
 	return replicas, nil
 }
@@ -352,11 +352,11 @@ func DownloadKubeconfig(ctx context.Context, client kubernetes.Interface, namesp
 func UpdateSecret(ctx context.Context, k8sClient kubernetes.Interface, secret *corev1.Secret) error {
 	if err := k8sretry.RetryOnConflict(k8sretry.DefaultBackoff, func() (err error) {
 		existingSecret := &corev1.Secret{}
-		if err = k8sClient.DirectClient().Get(ctx, client.ObjectKey{Namespace: secret.Namespace, Name: secret.Name}, existingSecret); err != nil {
+		if err = k8sClient.Client().Get(ctx, client.ObjectKey{Namespace: secret.Namespace, Name: secret.Name}, existingSecret); err != nil {
 			return err
 		}
 		existingSecret.Data = secret.Data
-		return k8sClient.DirectClient().Update(ctx, existingSecret)
+		return k8sClient.Client().Update(ctx, existingSecret)
 	}); err != nil {
 		return err
 	}
@@ -366,7 +366,7 @@ func UpdateSecret(ctx context.Context, k8sClient kubernetes.Interface, secret *c
 // GetObjectFromSecret returns object from secret
 func GetObjectFromSecret(ctx context.Context, k8sClient kubernetes.Interface, namespace, secretName, objectKey string) (string, error) {
 	secret := &corev1.Secret{}
-	err := k8sClient.DirectClient().Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret)
+	err := k8sClient.Client().Get(ctx, client.ObjectKey{Namespace: namespace, Name: secretName}, secret)
 	if err != nil {
 		return "", err
 	}
@@ -380,7 +380,7 @@ func GetObjectFromSecret(ctx context.Context, k8sClient kubernetes.Interface, na
 // NewClientFromServiceAccount returns a kubernetes client for a service account.
 func NewClientFromServiceAccount(ctx context.Context, k8sClient kubernetes.Interface, account *corev1.ServiceAccount) (kubernetes.Interface, error) {
 	secret := &corev1.Secret{}
-	err := k8sClient.DirectClient().Get(ctx, client.ObjectKey{Namespace: account.Namespace, Name: account.Secrets[0].Name}, secret)
+	err := k8sClient.Client().Get(ctx, client.ObjectKey{Namespace: account.Namespace, Name: account.Secrets[0].Name}, secret)
 	if err != nil {
 		return nil, err
 	}
@@ -407,7 +407,7 @@ func NewClientFromServiceAccount(ctx context.Context, k8sClient kubernetes.Inter
 func WaitUntilPodIsRunning(ctx context.Context, log *logrus.Logger, podName, podNamespace string, c kubernetes.Interface) error {
 	return retry.Until(ctx, defaultPollInterval, func(ctx context.Context) (done bool, err error) {
 		pod := &corev1.Pod{}
-		if err := c.DirectClient().Get(ctx, client.ObjectKey{Namespace: podNamespace, Name: podName}, pod); err != nil {
+		if err := c.Client().Get(ctx, client.ObjectKey{Namespace: podNamespace, Name: podName}, pod); err != nil {
 			return retry.SevereError(err)
 		}
 		if !health.IsPodReady(pod) {

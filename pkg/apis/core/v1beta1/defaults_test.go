@@ -320,20 +320,7 @@ var _ = Describe("Defaults", func() {
 				kubeReservedPID           = resource.MustParse("10k")
 			)
 
-			It("should default all fields except PID for k8s < 1.15", func() {
-				obj.Spec.Kubernetes.Version = "1.13.1"
-
-				SetDefaults_Shoot(obj)
-
-				Expect(obj.Spec.Kubernetes.Kubelet.KubeReserved).To(PointTo(Equal(KubeletConfigReserved{
-					CPU:    &defaultKubeReservedCPU,
-					Memory: &defaultKubeReservedMemory,
-				})))
-			})
-
-			It("should default all fields for k8s >= 1.15", func() {
-				obj.Spec.Kubernetes.Version = "1.15.1"
-
+			It("should default all fields", func() {
 				SetDefaults_Shoot(obj)
 
 				Expect(obj.Spec.Kubernetes.Kubelet.KubeReserved).To(PointTo(Equal(KubeletConfigReserved{
@@ -386,6 +373,23 @@ var _ = Describe("Defaults", func() {
 			SetDefaults_Shoot(obj)
 
 			Expect(obj.Spec.Kubernetes.KubeControllerManager.PodEvictionTimeout).To(Equal(&metav1.Duration{Duration: 2 * time.Minute}))
+		})
+
+		It("should not default the kube-controller-manager's node monitor grace period", func() {
+			nodeMonitorGracePeriod := &metav1.Duration{Duration: time.Minute}
+			obj.Spec.Kubernetes.KubeControllerManager = &KubeControllerManagerConfig{NodeMonitorGracePeriod: nodeMonitorGracePeriod}
+
+			SetDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod).To(Equal(nodeMonitorGracePeriod))
+		})
+
+		It("should default the kube-controller-manager's node monitor grace period", func() {
+			obj.Spec.Kubernetes.KubeControllerManager = &KubeControllerManagerConfig{}
+
+			SetDefaults_Shoot(obj)
+
+			Expect(obj.Spec.Kubernetes.KubeControllerManager.NodeMonitorGracePeriod).To(Equal(&metav1.Duration{Duration: 2 * time.Minute}))
 		})
 
 		It("should set the maintenance field", func() {

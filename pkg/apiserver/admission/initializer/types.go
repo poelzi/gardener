@@ -18,11 +18,13 @@ import (
 	coreclientset "github.com/gardener/gardener/pkg/client/core/clientset/internalversion"
 	externalcoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	coreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
+	seedmanagementclientset "github.com/gardener/gardener/pkg/client/seedmanagement/clientset/versioned"
+	seedmanagementinformers "github.com/gardener/gardener/pkg/client/seedmanagement/informers/externalversions"
 	settingsinformer "github.com/gardener/gardener/pkg/client/settings/informers/externalversions"
-	"github.com/gardener/gardener/third_party/forked/kubernetes/pkg/quota/v1"
 
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
+	quotav1 "k8s.io/apiserver/pkg/quota/v1"
 	"k8s.io/client-go/dynamic"
 	kubeinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -52,6 +54,18 @@ type WantsKubeInformerFactory interface {
 	admission.InitializationValidator
 }
 
+// WantsSeedManagementInformerFactory defines a function which sets InformerFactory for admission plugins that need it.
+type WantsSeedManagementInformerFactory interface {
+	SetSeedManagementInformerFactory(seedmanagementinformers.SharedInformerFactory)
+	admission.InitializationValidator
+}
+
+// WantsSeedManagementClientset defines a function which sets SeedManagement Clientset for admission plugins that need it.
+type WantsSeedManagementClientset interface {
+	SetSeedManagementClientset(seedmanagementclientset.Interface)
+	admission.InitializationValidator
+}
+
 // WantsSettingsInformerFactory defines a function which sets InformerFactory for admission plugins that need it.
 type WantsSettingsInformerFactory interface {
 	SetSettingsInformerFactory(settingsinformer.SharedInformerFactory)
@@ -78,7 +92,7 @@ type WantsAuthorizer interface {
 
 // WantsQuotaConfiguration defines a function which sets quota configuration for admission plugins that need it.
 type WantsQuotaConfiguration interface {
-	SetQuotaConfiguration(quota.Configuration)
+	SetQuotaConfiguration(quotav1.Configuration)
 	admission.InitializationValidator
 }
 
@@ -87,6 +101,9 @@ type pluginInitializer struct {
 	coreClient    coreclientset.Interface
 
 	externalCoreInformers externalcoreinformers.SharedInformerFactory
+
+	seedManagementInformers seedmanagementinformers.SharedInformerFactory
+	seedManagementClient    seedmanagementclientset.Interface
 
 	settingsInformers settingsinformer.SharedInformerFactory
 
@@ -97,7 +114,7 @@ type pluginInitializer struct {
 
 	authorizer authorizer.Authorizer
 
-	quotaConfiguration quota.Configuration
+	quotaConfiguration quotav1.Configuration
 }
 
 var _ admission.PluginInitializer = pluginInitializer{}

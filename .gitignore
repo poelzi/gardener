@@ -13,6 +13,7 @@
 .DS_Store
 *~
 
+.cache_concourse
 ./gardener-apiserver
 ./gardener-controller-manager
 TODO
@@ -28,3 +29,6 @@ config.vmdk
 # Virtual go & fuse
 .virtualgo
 .fuse_hidden*
+
+# GitGuardian
+.cache_ggshield

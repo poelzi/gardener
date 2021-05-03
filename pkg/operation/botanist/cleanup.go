@@ -20,7 +20,6 @@ import (
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
 	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	"github.com/gardener/gardener/pkg/apis/core/v1beta1/helper"
-	"github.com/gardener/gardener/pkg/operation/common"
 	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/flow"
 	utilclient "github.com/gardener/gardener/pkg/utils/kubernetes/client"
@@ -32,12 +31,12 @@ import (
 	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
+	storagev1 "k8s.io/api/storage/v1"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"k8s.io/kube-aggregator/pkg/controllers/autoregister"
@@ -72,7 +71,7 @@ var (
 	// NotSystemComponent is a requirement that something doesn't have the GardenRole GardenRoleSystemComponent.
 	NotSystemComponent = utils.MustNewRequirement(v1beta1constants.GardenRole, selection.NotEquals, v1beta1constants.GardenRoleSystemComponent)
 	// NoCleanupPrevention is a requirement that the ShootNoCleanup label of something is not true.
-	NoCleanupPrevention = utils.MustNewRequirement(common.ShootNoCleanup, selection.NotEquals, "true")
+	NoCleanupPrevention = utils.MustNewRequirement(v1beta1constants.ShootNoCleanup, selection.NotEquals, "true")
 	// NotKubernetesProvider is a requirement that the Provider label of something is not KubernetesProvider.
 	NotKubernetesProvider = utils.MustNewRequirement(Provider, selection.NotEquals, KubernetesProvider)
 	// NotKubeAggregatorAutoManaged is a requirement that something is not auto-managed by Kube-Aggregator.
@@ -156,7 +155,7 @@ var (
 	NamespaceErrorToleration = utilclient.TolerateErrors{apierrors.IsConflict}
 )
 
-func cleanResourceFn(cleanOps utilclient.CleanOps, c client.Client, list runtime.Object, opts ...utilclient.CleanOption) flow.TaskFn {
+func cleanResourceFn(cleanOps utilclient.CleanOps, c client.Client, list client.ObjectList, opts ...utilclient.CleanOption) flow.TaskFn {
 	return func(ctx context.Context) error {
 		return retry.Until(ctx, DefaultInterval, func(ctx context.Context) (done bool, err error) {
 			if err := cleanOps.CleanAndEnsureGone(ctx, c, list, opts...); err != nil {
@@ -190,8 +189,7 @@ func (b *Botanist) CleanExtendedAPIs(ctx context.Context) error {
 		c           = b.K8sShootClient.Client()
 		ensurer     = utilclient.GoneBeforeEnsurer(b.Shoot.Info.GetDeletionTimestamp().Time)
 		defaultOps  = utilclient.NewCleanOps(utilclient.DefaultCleaner(), ensurer)
-		crdCleaner  = utilclient.NewCRDCleaner()
-		crdCleanOps = utilclient.NewCleanOps(crdCleaner, ensurer)
+		crdCleanOps = utilclient.NewCleanOps(utilclient.DefaultCleaner(), ensurer)
 	)
 
 	return flow.Parallel(
@@ -245,4 +243,10 @@ func (b *Botanist) CleanShootNamespaces(ctx context.Context) error {
 	)
 
 	return cleanResourceFn(namespaceCleanOps, c, &corev1.NamespaceList{}, NamespaceMatchingLabelsSelector, NamespaceMatchingFieldsSelector, ZeroGracePeriod, FinalizeAfterFiveMinutes, NamespaceErrorToleration)(ctx)
+}
+
+// CleanVolumeAttachments cleans up all VolumeAttachments in the cluster, waits for them to be gone and finalizes any
+// remaining ones after five minutes.
+func CleanVolumeAttachments(ctx context.Context, c client.Client) error {
+	return cleanResourceFn(utilclient.DefaultCleanOps(), c, &storagev1.VolumeAttachmentList{}, ZeroGracePeriod, FinalizeAfterFiveMinutes)(ctx)
 }

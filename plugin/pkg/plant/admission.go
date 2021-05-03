@@ -21,10 +21,11 @@ import (
 	"io"
 
 	"github.com/gardener/gardener/pkg/apis/core"
+	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	admissioninitializer "github.com/gardener/gardener/pkg/apiserver/admission/initializer"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/internalversion"
 	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/internalversion"
-	"github.com/gardener/gardener/pkg/operation/common"
+	gutil "github.com/gardener/gardener/pkg/utils/gardener"
 	admissionutils "github.com/gardener/gardener/plugin/pkg/utils"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -133,7 +134,7 @@ func (a *Handler) Admit(ctx context.Context, attrs admission.Attributes, o admis
 	}
 
 	if attrs.GetOperation() == admission.Create {
-		metav1.SetMetaDataAnnotation(&plant.ObjectMeta, common.GardenCreatedBy, attrs.GetUserInfo().GetName())
+		metav1.SetMetaDataAnnotation(&plant.ObjectMeta, v1beta1constants.GardenCreatedBy, attrs.GetUserInfo().GetName())
 	}
 
 	return nil
@@ -173,7 +174,7 @@ func (a *Handler) validate(plant *core.Plant, attrs admission.Attributes) error 
 		return err
 	}
 
-	project, err := admissionutils.GetProject(plant.Namespace, a.projectLister)
+	project, err := gutil.ProjectForNamespaceFromInternalLister(a.projectLister, plant.Namespace)
 	if err != nil {
 		return apierrors.NewBadRequest(fmt.Sprintf("could not find referenced project: %+v", err.Error()))
 	}

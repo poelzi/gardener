@@ -16,12 +16,10 @@ package seed
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -29,14 +27,11 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	gardencorev1beta1 "github.com/gardener/gardener/pkg/apis/core/v1beta1"
-	v1beta1constants "github.com/gardener/gardener/pkg/apis/core/v1beta1/constants"
 	gardencoreinformers "github.com/gardener/gardener/pkg/client/core/informers/externalversions"
 	gardencorelisters "github.com/gardener/gardener/pkg/client/core/listers/core/v1beta1"
 	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap"
-	"github.com/gardener/gardener/pkg/client/kubernetes/clientmap/keys"
 	"github.com/gardener/gardener/pkg/controllerutils"
 	"github.com/gardener/gardener/pkg/gardenlet"
 	"github.com/gardener/gardener/pkg/gardenlet/apis/config"
@@ -44,7 +39,6 @@ import (
 	"github.com/gardener/gardener/pkg/gardenlet/controller/lease"
 	"github.com/gardener/gardener/pkg/healthz"
 	"github.com/gardener/gardener/pkg/logger"
-	"github.com/gardener/gardener/pkg/utils"
 	"github.com/gardener/gardener/pkg/utils/imagevector"
 )
 
@@ -62,9 +56,8 @@ type Controller struct {
 	seedLeaseControl      lease.Controller
 
 	seedLister gardencorelisters.SeedLister
-	seedSynced cache.InformerSynced
 
-	controllerInstallationSynced cache.InformerSynced
+	hasSyncedFuncs []cache.InformerSynced
 
 	seedQueue               workqueue.RateLimitingInterface
 	seedLeaseQueue          workqueue.RateLimitingInterface
@@ -87,7 +80,6 @@ func NewSeedController(
 	gardenCoreInformerFactory gardencoreinformers.SharedInformerFactory,
 	kubeInformerFactory kubeinformers.SharedInformerFactory,
 	healthManager healthz.Manager,
-	secrets map[string]*corev1.Secret,
 	imageVector imagevector.ImageVector,
 	componentImageVectors imagevector.ComponentImageVectors,
 	identity *gardencorev1beta1.Gardener,
@@ -113,7 +105,7 @@ func NewSeedController(
 		config:                  config,
 		healthManager:           healthManager,
 		recorder:                recorder,
-		control:                 NewDefaultControl(clientMap, gardenCoreInformerFactory, secrets, imageVector, componentImageVectors, identity, recorder, config, secretLister, shootLister),
+		control:                 NewDefaultControl(clientMap, gardenCoreInformerFactory, imageVector, componentImageVectors, identity, recorder, config, secretLister, seedLister, shootLister),
 		extensionCheckControl:   NewDefaultExtensionCheckControl(clientMap, controllerInstallationLister, metav1.Now),
 		seedLeaseControl:        lease.NewLeaseController(time.Now, clientMap, LeaseResyncSeconds, gardencorev1beta1.GardenerSeedLeaseNamespace),
 		seedLister:              seedLister,
@@ -140,7 +132,6 @@ func NewSeedController(
 			AddFunc: seedController.seedLeaseAdd,
 		},
 	})
-	seedController.seedSynced = seedInformer.Informer().HasSynced
 
 	controllerInstallationInformer.Informer().AddEventHandler(cache.FilteringResourceEventHandler{
 		FilterFunc: controllerutils.ControllerInstallationFilterFunc(confighelper.SeedNameFromSeedConfig(config.SeedConfig), seedLister, config.SeedSelector),
@@ -150,7 +141,11 @@ func NewSeedController(
 			DeleteFunc: seedController.controllerInstallationOfSeedDelete,
 		},
 	})
-	seedController.controllerInstallationSynced = controllerInstallationInformer.Informer().HasSynced
+
+	seedController.hasSyncedFuncs = []cache.InformerSynced{
+		seedInformer.Informer().HasSynced,
+		controllerInstallationInformer.Informer().HasSynced,
+	}
 
 	return seedController
 }
@@ -159,7 +154,7 @@ func NewSeedController(
 func (c *Controller) Run(ctx context.Context, workers int) {
 	var waitGroup sync.WaitGroup
 
-	if !cache.WaitForCacheSync(ctx.Done(), c.seedSynced, c.controllerInstallationSynced) {
+	if !cache.WaitForCacheSync(ctx.Done(), c.hasSyncedFuncs...) {
 		logger.Logger.Error("Timed out waiting for caches to sync")
 		return
 	}
@@ -173,26 +168,6 @@ func (c *Controller) Run(ctx context.Context, workers int) {
 	}()
 
 	logger.Logger.Info("Seed controller initialized.")
-
-	// Register Seed object if desired
-	if c.config.SeedConfig != nil {
-		seed := &gardencorev1beta1.Seed{ObjectMeta: metav1.ObjectMeta{Name: c.config.SeedConfig.Name}}
-
-		gardenClient, err := c.clientMap.GetClient(ctx, keys.ForGarden())
-		if err != nil {
-			panic(fmt.Errorf("could not register seed %q: failed to get garden client: %+v", seed.Name, err))
-		}
-
-		if _, err := controllerutil.CreateOrUpdate(ctx, gardenClient.Client(), seed, func() error {
-			seed.Labels = utils.MergeStringMaps(map[string]string{
-				v1beta1constants.GardenRole: v1beta1constants.GardenRoleSeed,
-			}, c.config.SeedConfig.Labels)
-			seed.Spec = c.config.SeedConfig.Seed.Spec
-			return nil
-		}); err != nil {
-			panic(fmt.Errorf("could not register seed %q: %+v", seed.Name, err))
-		}
-	}
 
 	for i := 0; i < workers; i++ {
 		controllerutils.DeprecatedCreateWorker(ctx, c.seedQueue, "Seed", c.reconcileSeedKey, &waitGroup, c.workerCh)
