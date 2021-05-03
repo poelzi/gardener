@@ -1,21 +1,24 @@
-{ pkgs ? import <nixpkgs> { } }:
+{ sources ? import ./nix/sources.nix }:
 let
-  inherit (pkgs) lib buildGoPackage fetchFromGitHub;
+  pkgs = import sources.nixpkgs {};
+in
+let
+  inherit (pkgs) lib buildGoModule fetchFromGitHub mkShell;
 
-  spiff = buildGoPackage rec {
+  spiff = buildGoModule rec {
     pname = "minio-exporter";
-    version = "1.6.0-beta-1";
+    version = "1.7.0-beta-1";
     rev = "v${version}";
 
-    goPackagePath = "github.com/mandelsoft/spiff";
+    # goPackagePath = "github.com/mandelsoft/spiff";
     src = fetchFromGitHub {
       inherit rev;
       owner = "mandelsoft";
       repo = "spiff";
-      sha256 = "1jrdjcywlqfracr4w26yz1hxqjbdpqawalpaf2jallsmdbbcsqi3";
+      sha256 = "09a7zd0crwqivgvgs63ywh06v834xhrj360xvm3nmcjrmg4ys3w3";
     };
-
-    goDeps = ./hack/nix/spiff/deps.nix;
+    vendorSha256 = "1k0gy1xzh25bqxxh52mpshqshl6hlc9xivkgbr9spxz8nh6h4dl4";
+    # goDeps = ./hack/nix/spiff/deps.nix;
 
     meta = with lib; {
       description = "In-domain YAML templating engine spiff++";
@@ -45,5 +48,6 @@ in pkgs.mkShell {
       protobuf
       screen
       yaml2json
+      parallel
     ] ++ [ spiff ];
 }
